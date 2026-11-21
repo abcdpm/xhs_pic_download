@@ -1,0 +1,8 @@
+node_modules/
+npm-debug.log*
+.DS_Store
+
+# Live Photo worker 编译产物与运行日志
+livephoto/bin/
+livephoto/node_modules/
+*.log

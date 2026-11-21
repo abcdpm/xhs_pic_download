@@ -4,7 +4,9 @@
 
 结合iOS的“快捷指令”，一键从小红书下载无水印图片/视频
 
-> Live Photo 会被拆分为封面图片 + 一段视频，可自行使用其他 App 进行合并
+> Live Photo 现在支持**自动合成**：在 Mac 上跑一个合成 worker，粘贴链接后 Live Photo 会自动写入照片图库并同步到 iPhone，详见 [docs/livephoto.md](docs/livephoto.md)。
+>
+> 未部署 worker 时，Live Photo 依旧会被拆分为封面图片（原图）+ 一段视频，可自行使用其他 App 进行合并。
 
 ## 使用教程
 
@@ -38,6 +40,48 @@ https://www.icloud.com/shortcuts/fef496ed540e42949e8154ddbf6ac8f9
 #### 3. 使用
 
 在小红书客户端，点击动态详情，右上角的箭头分享按钮，点击「复制链接」，打开「快捷指令」App，单击「一键保存小红书图片/视频」即可（会自动获取剪切板）。
+
+## Live Photo 自动合成（可选）
+
+Live Photo 需要「静止帧 + 3 秒视频」通过同一个 Asset Identifier 配对，而 iOS 快捷指令没有合成能力（只有「存储图像 / 存储视频」），因此合成放在 macOS 上完成：
+
+1. 主服务接口保持兼容（`picUrlArray` 与上游完全一致），响应新增 `items`，逐个图片携带 `livePhotoVideoUrl` / `isLivePhoto`；
+2. 在 Mac（mini）上运行 `livephoto/worker.js`：下载原图 + Live 视频 → ffmpeg 规范化（webp/heic → JPEG、视频裁成 3 秒 H.264/yuv420p）→ 调用 `PHAssetCreationRequest` 以 `.photo + .pairedVideo` 写入照片图库；
+3. 打开「iCloud 照片」，合成的 Live Photo 会自动出现在 iPhone 上。
+
+```sh
+cd livephoto
+brew install node ffmpeg
+npm install && ./build.sh     # 编译 Swift 导入器
+node worker.js                # 首次运行请允许「访问您的照片」
+```
+
+快捷指令改造与完整原理见 [docs/livephoto.md](docs/livephoto.md)、[livephoto/README.md](livephoto/README.md)。
+
+## 接口
+
+`GET|POST /getXhsPicUrl?shareText=<分享文本>`
+
+```json
+{
+  "picUrlArray": ["原图...", "Live Photo 视频...", "普通视频"],
+  "items": [
+    { "index": 0, "type": "image", "imageUrl": "https://ci.xiaohongshu.com/<id>",
+      "originalUrl": "https://ci.xiaohongshu.com/<id>",
+      "livePhotoVideoUrl": "https://sns-video-hw.xhscdn.com/xxx.mov", "isLivePhoto": true }
+  ]
+}
+```
+
+> 上游已改为返回原图（不带 `imageView2` 参数），格式可能是 jpeg/webp/heic；worker 会统一转成 JPEG 后再参与 Live Photo 配对。
+
+可选：设置 `LIVEPHOTO_WORKER_URL=http://127.0.0.1:7777` 后，请求带 `?import=1` 会由服务端自动把 Live Photo 任务投递给 Mac 上的 worker。
+
+## 测试
+
+```sh
+npm test
+```
 
 ## 声明:
 

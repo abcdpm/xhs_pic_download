@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  LaunchAgent：开机自启 Live Photo 合成 worker。
+  安装：
+    cp com.nfew.xhs-livephoto.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.nfew.xhs-livephoto.plist
+  注意：launchd 启动的进程属于独立 TCC 主体，首次写入照片库可能需要
+       先在 Terminal 里手动跑一次 node worker.js 并完成授权，若仍报
+       "照片图库权限未授予"，改用 Terminal/tmux 常驻方式启动（见 README）。
+  路径请按实际部署位置修改。
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.nfew.xhs-livephoto</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/env</string>
+        <string>node</string>
+        <string>/Users/CHANGE_ME/xhs_pic_download/livephoto/worker.js</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/CHANGE_ME/xhs_pic_download/livephoto</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>PORT</key>
+        <string>7777</string>
+        <key>ALBUM</key>
+        <string>小红书Live</string>
+        <key>FFMPEG</key>
+        <string>/opt/homebrew/bin/ffmpeg</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/xhs-livephoto.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/xhs-livephoto.err.log</string>
+</dict>
+</plist>

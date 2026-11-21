@@ -33,9 +33,11 @@ module.exports = async function (params, context) {
   const fullUrl = await getFullURL(shareText)
   console.log(`fullUrl->${fullUrl}`)
 
-  const picUrlArray = await getPicUrl(fullUrl, xhsCookie)
+  const result = await getPicUrl(fullUrl, xhsCookie)
   return {
-    picUrlArray,
+    picUrlArray: result.picUrlArray,
+    // 结构化结果：保留「图片 <-> Live Photo 视频」的配对关系，供 Live Photo 合成使用
+    items: result.items,
   }
 }
 
@@ -111,45 +113,68 @@ async function getPicUrl(fullUrl, xhsCookie) {
   const responseData = response.data
   const resultObj = await findDom(responseData)
 
-  let picIdArray = []
   let note = null
   let imageList = []
   try {
     // 兼容桌面版页面结构和移动版页面结构（state.noteData.data.noteData）
-    note = resultObj?.note?.noteDetailMap?.[resultObj?.note?.firstNoteId]?.note || resultObj?.noteData?.data?.noteData
+    note = findNote(resultObj)
     if (!note) {
       throw new Error('未找到笔记（需要登录或笔记已删除）')
     }
     imageList = note?.imageList || []
-    const regex = /https?:\/\/sns-webpic-qc\.xhscdn\.com\/\d+\/[0-9a-z]+\/(\S+)!/;
-    imageList.forEach((item) => {
-      const tempUrl = item.infoList[0].url
-      let match = tempUrl.match(regex)
-      if (match && match[1]) {
-        picIdArray.push(match[1])
-      }
-    })
   } catch (error) {
     console.log(error)
     throw new Error('不包含图片')
   }
-  let picUrlArray = []
-  if (picIdArray && picIdArray.length > 0) {
-    // 不带 imageView2 参数时返回原图（原始分辨率、原始格式），带 format/png 参数现在会返回 404
-    picIdArray.forEach((item) => picUrlArray.push(`https://ci.xiaohongshu.com/${item}`))
+  return buildItems(imageList, note)
+}
+
+/**
+ * 从 window.__INITIAL_STATE__ 中取出笔记对象。
+ * 移动版页面（iPhone UA 请求）把笔记放在 state.noteData.data.noteData，
+ * 桌面版页面放在 state.note.noteDetailMap[firstNoteId].note。
+ */
+function findNote(resultObj) {
+  return (
+    resultObj?.note?.noteDetailMap?.[resultObj?.note?.firstNoteId]?.note ||
+    resultObj?.noteData?.data?.noteData ||
+    null
+  )
+}
+
+const PIC_ID_REGEX = /https?:\/\/sns-webpic-qc\.xhscdn\.com\/\d+\/[0-9a-z]+\/(\S+)!/
+// 兜底：取最后一个路径片段（去掉 ! / ? 后缀）
+const FALLBACK_PIC_ID_REGEX = /\/([0-9a-z]{10,})(?:[!?]|$)/i
+const CDN_IMAGE_HOST = 'https://ci.xiaohongshu.com'
+
+/**
+ * 从小红书图片地址中抠出 picId。优先 infoList[0].url（桌面/移动页面都是主图地址），
+ * 再退回 urlDefault，最后按路径兜底，避免个别笔记缺少 infoList 时整篇失败。
+ */
+function extractPicId(imageItem) {
+  const urls = []
+  if (imageItem?.infoList?.[0]?.url) {
+    urls.push(imageItem.infoList[0].url)
   }
-
-  imageList.forEach((item) => {
-    try {
-      const livePhotoVideoUrl = item?.stream?.h264?.[0]?.masterUrl
-      if(livePhotoVideoUrl){
-        picUrlArray.push(livePhotoVideoUrl)
-      }
-    } catch (error) {
-      console.log(error)
+  if (imageItem?.urlDefault) {
+    urls.push(imageItem.urlDefault)
+  }
+  for (const url of urls) {
+    const match = String(url).match(PIC_ID_REGEX)
+    if (match && match[1]) {
+      return match[1]
     }
-  })
+  }
+  for (const url of urls) {
+    const match = String(url).match(FALLBACK_PIC_ID_REGEX)
+    if (match && match[1]) {
+      return match[1]
+    }
+  }
+  return null
+}
 
+function extractVideoUrl(note) {
   let videoUrl = null
   try {
     const media = note.video?.media
@@ -174,8 +199,66 @@ async function getPicUrl(fullUrl, xhsCookie) {
   } catch (error) {
     console.log(error)
   }
+  return videoUrl
+}
+
+/**
+ * 把 note.imageList 转换成结构化 items，同时生成与上游完全一致的扁平 picUrlArray。
+ *
+ * items[i] = {
+ *   index,
+ *   type: 'image' | 'video',
+ *   imageUrl,          // 原图（https://ci.xiaohongshu.com/<picId>，不再带 imageView2 参数）
+ *   livePhotoVideoUrl, // 该图关联的 Live Photo 视频，没有则为 null
+ *   isLivePhoto,
+ * }
+ */
+function buildItems(imageList, note) {
+  const items = []
+  const picUrlArray = []
+  const list = Array.isArray(imageList) ? imageList : []
+
+  list.forEach((imageItem) => {
+    const picId = extractPicId(imageItem)
+    const livePhotoVideoUrl = imageItem?.stream?.h264?.[0]?.masterUrl || null
+    if (!picId && !livePhotoVideoUrl) {
+      return
+    }
+    const imageUrl = picId ? `${CDN_IMAGE_HOST}/${picId}` : null
+    if (imageUrl) {
+      picUrlArray.push(imageUrl)
+    }
+    items.push({
+      index: items.length,
+      type: 'image',
+      imageUrl,
+      originalUrl: imageUrl,
+      livePhotoVideoUrl,
+      isLivePhoto: Boolean(livePhotoVideoUrl),
+    })
+  })
+
+  // 兼容旧行为：Live Photo 视频仍然追加在图片之后
+  items.forEach((item) => {
+    if (item.livePhotoVideoUrl) {
+      picUrlArray.push(item.livePhotoVideoUrl)
+    }
+  })
+
+  const videoUrl = extractVideoUrl(note)
   if (videoUrl) {
     picUrlArray.push(videoUrl)
+    items.push({
+      index: items.length,
+      type: 'video',
+      videoUrl,
+      isLivePhoto: false,
+    })
   }
-  return picUrlArray
+
+  return { picUrlArray, items }
 }
+
+module.exports.buildItems = buildItems
+module.exports.extractPicId = extractPicId
+module.exports.findNote = findNote
