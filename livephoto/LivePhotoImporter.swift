@@ -3,12 +3,14 @@
 //  把「静止帧 + 视频」合成为 Live Photo 并写入 macOS 照片图库。
 //
 //  WHY: iOS 端没有任何原生能力现场把两个文件合成为 Live Photo；
-//  而 exiftool 又无法给小红书 CDN 的 JPEG 新建 Apple MakerNote（ContentIdentifier），
+//  而 exiftool 又无法给小红书 CDN 的图片新建 Apple MakerNote（ContentIdentifier），
 //  所以走官方 API：PHAssetCreationRequest + .photo + .pairedVideo，
 //  Asset Identifier 由 Photos 自己生成，写入后随 iCloud 照片同步到 iPhone。
 //
-//  编译：./build.sh  (产物 livephoto/bin/lpimport)
+//  编译：./build.sh            （产物 livephoto/bin/lpimport）
 //  用法：lpimport --image a.jpg --video a.mov [--album "小红书Live"] [--date 2024-09-04T20:53:34Z] [--quiet]
+//
+//  注意：本文件是 swiftc 单文件可执行入口，顶层代码就是 main，请勿改动文件顺序。
 //
 
 import Foundation
@@ -21,6 +23,16 @@ struct Options {
     var date: Date?
     var quiet = false
 }
+
+let usageLines = [
+    "usage: lpimport --image <still.jpg> --video <live.mov> [options]",
+    "",
+    "  --image, -i  静止帧图片（JPEG/HEIC）",
+    "  --video, -v  配对视频（H.264 .mov/.mp4，建议 3 秒）",
+    "  --album, -a  导入后加入（必要时创建）的相簿名",
+    "  --date       照片拍摄时间，ISO8601，如 2024-09-04T20:53:34Z",
+    "  --quiet, -q  不输出 warning",
+]
 
 func logStderr(_ message: String) {
     FileHandle.standardError.write((message + "\n").data(using: .utf8)!)
@@ -41,13 +53,15 @@ func fail(_ message: String, code: Int32 = 1) -> Never {
 func parseOptions(_ argv: [String]) -> Options {
     var options = Options()
     var index = 0
+
+    func nextValue() -> String? {
+        index += 1
+        guard index < argv.count else { return nil }
+        return argv[index]
+    }
+
     while index < argv.count {
         let key = argv[index]
-        func nextValue() -> String? {
-            index += 1
-            guard index < argv.count else { return nil }
-            return argv[index]
-        }
         switch key {
         case "--image", "-i":
             options.image = nextValue()
@@ -73,16 +87,21 @@ func parseOptions(_ argv: [String]) -> Options {
         case "--quiet", "-q":
             options.quiet = true
         case "--help", "-h":
-            print("""
-            usage: lpimport --image <still.jpg> --video <live.mov> [options]
-
-              --image, -i  静止帧图片（JPEG/HEIC）
-              --video, -v  配对视频（H.264 .mov/.mp4，建议 3 秒）
-              --album, -a  导入后加入（必要时创建）的相簿名
-              --date       照片拍摄时间，ISO8601，如 2024-09-04T20:53:34Z
+            print(usageLines.joined(separator: "\n"))
+            exit(0)
+        default:
+            logStderr("[lpimport] warn: 忽略未知参数 \(key)")
+        }
+        index += 1
+    }
+    return options
+}
 
 // MARK: - Photos 权限
 
+/// 请求「添加到照片图库」权限。
+/// 首次运行会弹一次系统授权框；如果是从 launchd 启动且没弹框，
+/// 说明该进程拿不到 TCC 授权，请改为在 Terminal / tmux 中启动。
 func requestPhotosAccess() -> PHAuthorizationStatus {
     if #available(macOS 11.0, *) {
         var status: PHAuthorizationStatus = .notDetermined
@@ -141,23 +160,14 @@ func addAsset(_ assetIdentifier: String, toAlbum albumIdentifier: String) {
     semaphore.wait()
 }
 
-              --quiet, -q  不输出 warning
-            """)
-            exit(0)
-        default:
-            logStderr("[lpimport] warn: 忽略未知参数 \(key)")
-        }
-        index += 1
-    }
-    return options
-}
-
 // MARK: - 主流程
 
 let options = parseOptions(Array(CommandLine.arguments.dropFirst()))
+
 guard let imagePath = options.image, let videoPath = options.video else {
     fail("必须同时提供 --image 与 --video", code: 2)
 }
+
 let imageURL = URL(fileURLWithPath: imagePath)
 let videoURL = URL(fileURLWithPath: videoPath)
 for url in [imageURL, videoURL] where !FileManager.default.fileExists(atPath: url.path) {
