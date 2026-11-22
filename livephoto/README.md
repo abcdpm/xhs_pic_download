@@ -86,6 +86,51 @@ curl -s -X POST http://127.0.0.1:7777/livephoto/from-link \
 
 打开「照片」应能看到新 Live Photo（左下角圆环标识），几秒后 iPhone 同步出现。
 
+## 让容器 / 局域网设备访问 7777（macOS 防火墙）
+
+macOS 自带防火墙是**按应用放行，不按端口**，所谓「开放 7777」就是允许 `node` 接受传入连接。
+
+**先看防火墙是否开着**（默认是关的，关着就什么都不用做）：
+
+```bash
+sudo /usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate
+# Firewall is disabled. (State = 0)      →  不用处理
+# Firewall is enabled. (State = 1)       →  继续下面
+```
+
+**方式 A：弹窗点允许（最省事）**
+
+第一次有外部设备连 `7777` 时，macOS 会弹「是否允许 “node” 接受传入网络连接」，点**允许**即可。
+
+**方式 B：图形界面**
+
+系统设置 → 网络 → 防火墙 → 选项… → 允许以下应用接受传入连接 → 点 `+`，按 `⌘⇧G` 输入 `/opt/homebrew/bin/node`（Intel 是 `/usr/local/bin/node`）→ 添加后设为「允许传入连接」。
+
+**方式 C：命令行**
+
+```bash
+NODE_BIN="$(readlink "$(command -v node)")"        # 解析到真实路径
+sudo /usr/libexec/ApplicationFirewall/socketfilterfw --add "$NODE_BIN"
+sudo /usr/libexec/ApplicationFirewall/socketfilterfw --unblockapp "$NODE_BIN"
+
+# 确认结果
+sudo /usr/libexec/ApplicationFirewall/socketfilterfw --listapps | grep -A2 -i node
+```
+
+> 注意：Homebrew 升级 node 后真实路径会变（`…/Cellar/node/26.x/bin/node`），规则可能失效，重新执行上面的 `--add/--unblockapp` 即可；也可以直接把 `/opt/homebrew/bin/node` 这个软链加进去。
+
+**验证（换一台设备或容器里执行）**
+
+```bash
+curl -s http://192.168.0.88:7777/health
+# 或在容器里（镜像没有 curl）：
+docker exec xhs_pic_download node -e "fetch('http://192.168.0.88:7777/health').then(r=>r.json()).then(console.log)"
+```
+
+排查顺序：`127.0.0.1` 自测通 → 同网段另一台机器不通，就是防火墙/AP 隔离；`ECONNREFUSED` 多是 IP 端口写错，`timeout` 多是防火墙或跨网段。
+
+> 不建议把整个防火墙关掉（`--setglobalstate off`）当长期方案。真要按端口放行只能用 pf 写锚点规则，比按应用放行麻烦得多。
+
 ## 常用环境变量
 
 | 变量 | 默认 | 说明 |
