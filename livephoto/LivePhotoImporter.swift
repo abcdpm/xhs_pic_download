@@ -358,23 +358,44 @@ func rewriteMovie(input: URL, output: URL, identifier: String) throws {
     var tracks: [AVAssetTrack] = [videoTrack]
     tracks.append(contentsOf: asset.tracks(withMediaType: .audio))
 
-    var pairs: [(AVAssetReaderTrackOutput, AVAssetWriterInput)] = []
+    // 先把 reader 的轨输出建好并启动读取：格式描述从「首帧样本」里取，
+    // 避免对 formatDescriptions([Any]) 里的 CoreFoundation 类型做 as?（Swift 6 会报错）
+    var trackOutputs: [(AVMediaType, AVAssetReaderTrackOutput)] = []
     for track in tracks {
         let trackOutput = AVAssetReaderTrackOutput(track: track, outputSettings: nil)
         guard reader.canAdd(trackOutput) else { continue }
         reader.add(trackOutput)
+        trackOutputs.append((track.mediaType, trackOutput))
+    }
+    guard !trackOutputs.isEmpty else {
+        throw NSError(domain: "lpimport", code: 22, userInfo: [
+            NSLocalizedDescriptionKey: "没有任何可复制的轨道：\(input.path)"
+        ])
+    }
+    guard reader.startReading() else {
+        throw reader.error ?? NSError(domain: "lpimport", code: 24, userInfo: [
+            NSLocalizedDescriptionKey: "AVAssetReader startReading 失败"
+        ])
+    }
 
-        // 新版 SDK 里 formatDescriptions 已经是 [CMFormatDescription]，直接取
-        let formatHint: CMFormatDescription? = track.formatDescriptions.first
-        let trackInput = AVAssetWriterInput(mediaType: track.mediaType, outputSettings: nil, sourceFormatHint: formatHint)
+    var pairs: [(AVAssetReaderTrackOutput, AVAssetWriterInput)] = []
+    var firstSamples: [(AVAssetWriterInput, CMSampleBuffer)] = []
+    for (mediaType, trackOutput) in trackOutputs {
+        guard let sample = trackOutput.copyNextSampleBuffer(),
+              let format = CMSampleBufferGetFormatDescription(sample) else {
+            logStderr("[lpimport] warn: 轨 \(mediaType.rawValue) 没有可读样本，跳过")
+            continue
+        }
+        let trackInput = AVAssetWriterInput(mediaType: mediaType, outputSettings: nil, sourceFormatHint: format)
         trackInput.expectsMediaDataInRealTime = false
         guard writer.canAdd(trackInput) else { continue }
         writer.add(trackInput)
         pairs.append((trackOutput, trackInput))
+        firstSamples.append((trackInput, sample))
     }
     guard !pairs.isEmpty else {
         throw NSError(domain: "lpimport", code: 22, userInfo: [
-            NSLocalizedDescriptionKey: "没有任何可复制的轨道：\(input.path)"
+            NSLocalizedDescriptionKey: "轨道都无法加入 Writer：\(input.path)"
         ])
     }
 
@@ -404,11 +425,14 @@ func rewriteMovie(input: URL, output: URL, identifier: String) throws {
         ])
     }
     writer.startSession(atSourceTime: .zero)
-    guard reader.startReading() else {
-        writer.cancelWriting()
-        throw reader.error ?? NSError(domain: "lpimport", code: 24, userInfo: [
-            NSLocalizedDescriptionKey: "AVAssetReader startReading 失败"
-        ])
+
+    // 把预读的首帧写回去（格式描述就是从它拿的）
+    for (trackInput, sample) in firstSamples {
+        if !trackInput.append(sample) {
+            throw writer.error ?? NSError(domain: "lpimport", code: 25, userInfo: [
+                NSLocalizedDescriptionKey: "写入首帧失败（track=\(trackInput.mediaType.rawValue)）"
+            ])
+        }
     }
 
     if let adaptor = metadataAdaptor {
