@@ -473,6 +473,15 @@ func rewriteMovie(input: URL, output: URL, identifier: String) throws {
             NSLocalizedDescriptionKey: "AVAssetWriter 结束失败 status=\(writer.status.rawValue)"
         ])
     }
+
+    // 自检：确认输出里真的有 metadata 轨和 content.identifier
+    let written = AVURLAsset(url: output)
+    let types = written.tracks.map { $0.mediaType.rawValue }
+    logStderr("[lpimport] 重写后轨道：\(types.joined(separator: ","))（共 \(types.count) 条）")
+    let metaKeys = written.metadata.compactMap { $0.key as? String }
+    if !metaKeys.contains("com.apple.quicktime.content.identifier") {
+        logStderr("[lpimport] warn: 重写后的视频没有 content.identifier，元数据键=\(metaKeys.joined(separator: ","))")
+    }
 }
 
 // MARK: - 主流程
