@@ -290,9 +290,8 @@ docker exec xhs_pic_download node -e "fetch(process.env.LIVEPHOTO_WORKER_URL + '
 - `livephoto/build.sh`：`--help`、版本号解析（`1.0.1` / semver 校验）、非 macOS 预检、
   worker 版本上报（启动横幅 + `/health.importerVersion`）已在本环境验证；
   `swiftc` 编译与 `__info_plist` 注入需在 macOS 上执行。
-- `build-image.sh`：实际构建 `llllalex/xhs_pic_download:1.0.1` + `:latest`，OCI 标签
-  （version / revision / created / source）正确，容器内 `GET /healthz` 返回 `ok`
-  （用 `docker exec` 在容器内自检，不依赖宿主网络）。
+- `build-image.sh`：只做「读 `.env` 的 `APP_VERSION` → 构建 `<IMAGE>:<版本>` + `:latest` → 推送」；
+  OCI 标签（version / revision / created / source）正确，push 已在本地 `registry:2` 上验证成功。
 - 仅 `lpimport` 的 Photos 写入需在 macOS 上验证（本环境无 Photos.framework）。
 
 ## 9. 后续可选增强

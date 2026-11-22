@@ -2,6 +2,9 @@ node_modules/
 npm-debug.log*
 .DS_Store
 
+# 本地发布配置（APP_VERSION 等），每个部署环境各自维护
+.env
+
 # Live Photo worker 编译产物与运行日志
 livephoto/bin/
 livephoto/node_modules/

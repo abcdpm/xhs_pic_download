@@ -20,13 +20,14 @@ docker build -t nfew/xhs_pic_download:latest .
 docker run -d -p 7776:7776 --name xhs_pic_download nfew/xhs_pic_download:latest
 ```
 
-也可以用仓库自带的 `build-image.sh`（版本标签 + OCI 标签 + 冒烟测试 + 可选推送）：
+也可以用仓库自带的 `build-image.sh`（读了 `.env` 的版本号后构建并推送）：
 
 ```sh
-./build-image.sh              # 版本取自 package.json（当前 1.0.1），构建 :1.0.1 与 :latest
-./build-image.sh --push       # 构建后推送两个标签（需先 docker login）
-./build-image.sh 1.0.2 --push # 指定版本
-IMAGE=yourhub/xhs_pic_download ./build-image.sh   # 换镜像名
+cp .env.example .env    # 首次：内容是 APP_VERSION=1.0.1
+./build-image.sh        # 构建并推送 <IMAGE>:1.0.1 与 <IMAGE>:latest
+
+# 发新版本：改 .env 里的 APP_VERSION（1.0.1 → 1.0.2），再跑一次 ./build-image.sh
+# 换镜像名：IMAGE=yourhub/xhs_pic_download ./build-image.sh
 ```
 
 #### 1. 部署
