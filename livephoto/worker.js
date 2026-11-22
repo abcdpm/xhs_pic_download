@@ -203,6 +203,7 @@ async function prepareVideo(input, output, contentIdentifier, tag) {
   if (process.env.STILL_TIME_METADATA === '1') {
     args.push('-metadata', 'com.apple.quicktime.still-image-time=0')
   }
+  args.push('-video_track_timescale', '600')
   args.push(output)
   await run(FFMPEG, args)
 }
@@ -333,7 +334,14 @@ async function runJob(job) {
     }
   }
   try {
-    await prepareVideo(rawVideo, videoPath, job.contentIdentifier, PAIR_IDENTIFIER || TAG_CONTENT_ID)
+    // 配对模式下不需要 ffmpeg 写标识（下一步 AVAssetWriter 会写），
+    // 也避免 use_metadata_tags 生成的 meta/keys 影响 AVAssetReader 读取
+    await prepareVideo(
+      rawVideo,
+      videoPath,
+      job.contentIdentifier,
+      PAIR_IDENTIFIER ? false : TAG_CONTENT_ID
+    )
   } catch (error) {
     throw new Error(
       `视频转码失败（下载到 ${video.size} 字节，content-type=${video.contentType}）: ${error.message}`

@@ -383,7 +383,11 @@ func rewriteMovie(input: URL, output: URL, identifier: String) throws {
     for (mediaType, trackOutput) in trackOutputs {
         guard let sample = trackOutput.copyNextSampleBuffer(),
               let format = CMSampleBufferGetFormatDescription(sample) else {
-            logStderr("[lpimport] warn: 轨 \(mediaType.rawValue) 没有可读样本，跳过")
+            logStderr(
+                "[lpimport] warn: 轨 \(mediaType.rawValue) 没有可读样本"
+                    + "（reader.status=\(reader.status.rawValue)"
+                    + ", error=\(reader.error.map { $0.localizedDescription } ?? "nil")）"
+            )
             continue
         }
         let trackInput = AVAssetWriterInput(mediaType: mediaType, outputSettings: nil, sourceFormatHint: format)
