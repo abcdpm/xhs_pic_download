@@ -28,11 +28,15 @@ const WORK_DIR = process.env.WORK_DIR || path.join(os.tmpdir(), 'xhs-livephoto')
 const TRIM_SECONDS = Number(process.env.TRIM_SECONDS || 3)
 const CONCURRENCY = Number(process.env.CONCURRENCY || 1)
 const KEEP_FAILED = process.env.KEEP_FAILED === '1'
-// 是否往视频里写 com.apple.quicktime.content.identifier：
-// 静止帧那边写不进去（Apple MakerNote 无法新建），两个文件标识不一致时
-// Photos 可能直接拒绝配对（PHPhotosError 3302），所以默认关闭，交由 Photos 生成。
+// PhotoKit 配对要求「静止帧的 Apple MakerNote tag 17」与「视频的
+// com.apple.quicktime.content.identifier」两个标识一致。
+// PAIR_IDENTIFIER=1（默认）时：worker 生成 UUID，写进视频，并让 lpimport
+// 用 ImageIO 写进静止帧（exiftool 做不到这件事）。
+// 设为 0 可退回旧行为（不写标识、静止帧由 ffmpeg/sips 预先转码）。
+const PAIR_IDENTIFIER = process.env.PAIR_IDENTIFIER !== '0'
+// 仅在没有开启配对时生效：是否仍单独给视频写标识（导出散文件用）
 const TAG_CONTENT_ID = process.env.TAG_CONTENT_ID === '1'
-// 把静止帧裁剪对齐到视频的宽高（解决 3302 里「宽高比不一致」这一类）
+// 把静止帧裁剪对齐到视频的宽高（备用开关，配对模式下 lpimport 会用 ImageIO 缩放）
 const MATCH_STILL_TO_VIDEO = process.env.MATCH_STILL_TO_VIDEO === '1'
 const DOWNLOAD_TIMEOUT = Number(process.env.DOWNLOAD_TIMEOUT || 60000)
 const MAX_JOBS_KEPT = Number(process.env.MAX_JOBS_KEPT || 200)
@@ -153,12 +157,11 @@ async function prepareStill(input, output, videoSize) {
 /**
  * 把任意来源的 Live Photo 视频规范化为 Photos 能接受的配对视频：
  * H.264 + yuv420p + 3 秒 + mov 容器。
- * 注意：默认**不写** com.apple.quicktime.content.identifier ——
- * 静止帧那边无法写入同样的标识（Apple MakerNote 不能新建），
- * 两者不一致时 Photos 会拒绝配对（PHPhotosError 3302）。
- * 需要导出「两个散文件」给第三方 App 时，用 TAG_CONTENT_ID=1 打开。
+ * tag=true 时写入 com.apple.quicktime.content.identifier（必须与静止帧的
+ * Apple MakerNote tag 17 一致，Photos 才会把它们配成 Live Photo）。
  */
-async function prepareVideo(input, output, contentIdentifier) {
+async function prepareVideo(input, output, contentIdentifier, tag) {
+  const useTag = tag === true
   const args = [
     '-y',
     '-hide_banner',
@@ -189,9 +192,9 @@ async function prepareVideo(input, output, contentIdentifier) {
     '-b:a',
     '128k',
     '-movflags',
-    TAG_CONTENT_ID ? '+faststart+use_metadata_tags' : '+faststart',
+    useTag ? '+faststart+use_metadata_tags' : '+faststart',
   ]
-  if (TAG_CONTENT_ID) {
+  if (useTag) {
     args.push('-metadata', `com.apple.quicktime.content.identifier=${contentIdentifier}`)
   }
   args.push(output)
@@ -237,13 +240,19 @@ async function probeVideo(input) {
   }
 }
 
-async function importLivePhoto({ stillPath, videoPath, album, takenAt }) {
+async function importLivePhoto({ stillPath, videoPath, album, takenAt, identifier, maxPixel }) {
   const args = ['--image', stillPath, '--video', videoPath]
   if (album) {
     args.push('--album', album)
   }
   if (takenAt) {
     args.push('--date', takenAt)
+  }
+  if (identifier) {
+    args.push('--identifier', identifier)
+  }
+  if (maxPixel && maxPixel > 0) {
+    args.push('--max-pixel', String(maxPixel))
   }
   const { stdout } = await run(IMPORTER, args, 240000)
   const lastLine = stdout.split('\n').filter(Boolean).pop()
@@ -296,35 +305,47 @@ async function runJob(job) {
   console.info(`[job ${job.id}] media still=${fmt(stillMedia)} video=${fmt(videoMedia)}`)
 
   job.step = 'transcode'
-  try {
-    await prepareStill(rawImage, stillPath, videoMedia)
-  } catch (error) {
-    throw new Error(
-      `静止帧转码失败（下载到 ${image.size} 字节，content-type=${image.contentType}）: ${error.message}`
-    )
+  if (!PAIR_IDENTIFIER) {
+    try {
+      await prepareStill(rawImage, stillPath, videoMedia)
+    } catch (error) {
+      throw new Error(
+        `静止帧转码失败（下载到 ${image.size} 字节，content-type=${image.contentType}）: ${error.message}`
+      )
+    }
   }
   try {
-    await prepareVideo(rawVideo, videoPath, job.contentIdentifier)
+    await prepareVideo(rawVideo, videoPath, job.contentIdentifier, PAIR_IDENTIFIER || TAG_CONTENT_ID)
   } catch (error) {
     throw new Error(
       `视频转码失败（下载到 ${video.size} 字节，content-type=${video.contentType}）: ${error.message}`
     )
   }
 
-  const outStill = await probeImage(stillPath)
   const outVideo = await probeVideo(videoPath)
-  job.media.output = { still: outStill, video: outVideo }
-  console.info(
-    `[job ${job.id}] output still=${fmt(outStill)} video=${fmt(outVideo)}` +
-      `${MATCH_STILL_TO_VIDEO ? ' (已按视频尺寸对齐静止帧)' : ''}`
-  )
+  job.media.output = { video: outVideo }
+  if (PAIR_IDENTIFIER) {
+    console.info(
+      `[job ${job.id}] output video=${fmt(outVideo)} identifier=${job.contentIdentifier}` +
+        '（静止帧由 lpimport 用 ImageIO 写入同一标识）'
+    )
+  } else {
+    const outStill = await probeImage(stillPath)
+    job.media.output.still = outStill
+    console.info(
+      `[job ${job.id}] output still=${fmt(outStill)} video=${fmt(outVideo)}` +
+        `${MATCH_STILL_TO_VIDEO ? ' (已按视频尺寸对齐静止帧)' : ''}`
+    )
+  }
 
   job.step = 'import'
   const result = await importLivePhoto({
-    stillPath,
+    stillPath: PAIR_IDENTIFIER ? rawImage : stillPath,
     videoPath,
     album: job.album,
     takenAt: job.takenAt,
+    identifier: PAIR_IDENTIFIER ? job.contentIdentifier : null,
+    maxPixel: Number(process.env.STILL_MAX_EDGE || 0),
   })
 
   job.step = 'done'
@@ -333,6 +354,7 @@ async function runJob(job) {
     album: result.album,
     imageBytes: image.size,
     videoBytes: video.size,
+    identifier: result.identifier || null,
   }
   if (!KEEP_FAILED) {
     await fsp.rm(jobDir, { recursive: true, force: true })
@@ -470,6 +492,7 @@ app.get('/health', (req, res) => {
     trimSeconds: TRIM_SECONDS,
     stillMaxEdge: Number(process.env.STILL_MAX_EDGE || 0),
     tagContentId: TAG_CONTENT_ID,
+    pairIdentifier: PAIR_IDENTIFIER,
     matchStillToVideo: MATCH_STILL_TO_VIDEO,
     running,
     queued: queue.length,

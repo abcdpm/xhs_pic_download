@@ -186,7 +186,8 @@ iOS 快捷指令 ──(shareText)──> GET|POST /getXhsPicUrl
 | `TRIM_SECONDS` | 3 | 视频裁剪时长（Apple 约定 3s） |
 | `STILL_MAX_EDGE` | 0 | >0 时按最长边缩放静止帧（让尺寸贴近 1080p 级视频，如 1440） |
 | `MATCH_STILL_TO_VIDEO` | 0 | 置 1 时把静止帧按视频宽高居中裁剪（`PHPhotosError 3302` 的常见对策） |
-| `TAG_CONTENT_ID` | 0 | 置 1 时才往视频写 `com.apple.quicktime.content.identifier`；默认关闭，避免与静止帧标识不一致 |
+| `PAIR_IDENTIFIER` | 1 | 生成 UUID 并写入视频 `content.identifier` + 静止帧 Apple MakerNote tag 17（PhotoKit 配对要求两端一致）；置 0 退回旧行为 |
+| `TAG_CONTENT_ID` | 0 | 仅在 `PAIR_IDENTIFIER=0` 时生效：单独给视频写标识（导出散文件用） |
 | `SIPS_FALLBACK` | 1 | ffmpeg 转码失败时用 macOS `sips` 兜底（HEIC 场景） |
 | `CONCURRENCY` | 1 | 同时合成任务数 |
 | `KEEP_FAILED` | 0 | 置 1 保留失败任务临时目录便于排查 |

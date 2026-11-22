@@ -14,6 +14,7 @@
 //
 
 import Foundation
+import ImageIO
 import Photos
 
 struct Options {
@@ -21,6 +22,8 @@ struct Options {
     var video: String?
     var album: String?
     var date: Date?
+    var identifier: String?
+    var maxPixel: Int = 0
     var quiet = false
 }
 
@@ -31,6 +34,8 @@ let usageLines = [
     "  --video, -v  配对视频（H.264 .mov/.mp4，建议 3 秒）",
     "  --album, -a  导入后加入（必要时创建）的相簿名",
     "  --date       照片拍摄时间，ISO8601，如 2024-09-04T20:53:34Z",
+    "  --identifier 写入静止帧 Apple MakerNote 的 Live Photo 标识（UUID），须与视频的一致",
+    "  --max-pixel  静止帧最长边不超过该像素（0 表示不缩放，需配合 --identifier）",
     "  --quiet, -q  不输出 warning",
     "  --version, -V 打印版本号",
 ]
@@ -104,6 +109,12 @@ func parseOptions(_ argv: [String]) -> Options {
                 } else {
                     logStderr("[lpimport] warn: 无法解析日期 \(raw)，忽略")
                 }
+            }
+        case "--identifier":
+            options.identifier = nextValue()
+        case "--max-pixel":
+            if let raw = nextValue(), let value = Int(raw) {
+                options.maxPixel = value
             }
         case "--quiet", "-q":
             options.quiet = true
@@ -185,6 +196,88 @@ func addAsset(_ assetIdentifier: String, toAlbum albumIdentifier: String) {
     semaphore.wait()
 }
 
+// MARK: - 给静止帧写入 Live Photo 标识（Apple MakerNote tag 17）
+//
+// PhotoKit 配对「静止帧 + 视频」时要求两端的 asset identifier 一致：
+//   - 视频：QuickTime Keys 里的 com.apple.quicktime.content.identifier
+//   - 静止帧：EXIF 里 Apple MakerNote 的 tag 17（ContentIdentifier）
+// 静止帧这一半 exiftool 写不了（无法新建 MakerNote），但 ImageIO 可以：
+// CGImageDestination 支持 kCGImagePropertyMakerAppleDictionary。
+// 写完会读回校验，确认 tag 17 真的写进去了才继续。
+
+func writeJPEG(cgImage: CGImage, to url: URL, makerApple: [AnyHashable: Any]) throws {
+    guard let destination = CGImageDestinationCreateWithURL(url as CFURL, "public.jpeg" as CFString, 1, nil) else {
+        throw NSError(domain: "lpimport", code: 14, userInfo: [
+            NSLocalizedDescriptionKey: "无法创建输出图片：\(url.path)"
+        ])
+    }
+    let properties: [CFString: Any] = [
+        kCGImagePropertyMakerAppleDictionary: makerApple,
+        kCGImageDestinationLossyCompressionQuality: 0.95,
+    ]
+    CGImageDestinationAddImage(destination, cgImage, properties as CFDictionary)
+    guard CGImageDestinationFinalize(destination) else {
+        throw NSError(domain: "lpimport", code: 15, userInfo: [
+            NSLocalizedDescriptionKey: "写出 JPEG 失败：\(url.path)"
+        ])
+    }
+}
+
+func readMakerAppleIdentifier(from url: URL) -> String? {
+    guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+          let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+          let makerApple = properties[kCGImagePropertyMakerAppleDictionary] as? [AnyHashable: Any]
+    else {
+        return nil
+    }
+    if let value = makerApple[17] as? String { return value }
+    if let value = makerApple["17"] as? String { return value }
+    return nil
+}
+
+func writeTaggedStill(from source: URL, to destination: URL, identifier: String, maxPixel: Int) throws {
+    guard let imageSource = CGImageSourceCreateWithURL(source as CFURL, nil) else {
+        throw NSError(domain: "lpimport", code: 10, userInfo: [
+            NSLocalizedDescriptionKey: "无法读取静止帧：\(source.path)"
+        ])
+    }
+    var options: [CFString: Any] = [
+        kCGImageSourceCreateThumbnailFromImageAlways: true,
+        kCGImageSourceCreateThumbnailWithTransform: true,
+    ]
+    if maxPixel > 0 {
+        options[kCGImageSourceThumbnailMaxPixelSize] = maxPixel
+    }
+    guard let cgImage = CGImageSourceCreateThumbnailAtIndex(imageSource, 0, options as CFDictionary) else {
+        throw NSError(domain: "lpimport", code: 11, userInfo: [
+            NSLocalizedDescriptionKey: "无法解码静止帧（HEIC/WebP 需要系统支持）：\(source.path)"
+        ])
+    }
+
+    // MakerApple 字典的 key 形式在不同系统上表现不同，两种都试，写完读回校验
+    let keyForms: [[AnyHashable: Any]] = [
+        [17: identifier],
+        ["17": identifier],
+    ]
+    var lastError: Error?
+    for form in keyForms {
+        do {
+            try writeJPEG(cgImage: cgImage, to: destination, makerApple: form)
+            if readMakerAppleIdentifier(from: destination) == identifier {
+                return
+            }
+            lastError = NSError(domain: "lpimport", code: 12, userInfo: [
+                NSLocalizedDescriptionKey: "写入 MakerApple 后读回校验失败（key: \(form.keys.first ?? "?")）"
+            ])
+        } catch {
+            lastError = error
+        }
+    }
+    throw lastError ?? NSError(domain: "lpimport", code: 13, userInfo: [
+        NSLocalizedDescriptionKey: "无法给静止帧写入 Live Photo 标识"
+    ])
+}
+
 // MARK: - 主流程
 
 let options = parseOptions(Array(CommandLine.arguments.dropFirst()))
@@ -204,6 +297,22 @@ guard status == .authorized else {
     fail("照片图库权限未授予 (status=\(status.rawValue))，请在 系统设置 > 隐私与安全性 > 照片 中允许 lpimport / Terminal", code: 3)
 }
 
+// 需要与视频里同样的 asset identifier 才能让 Photos 认这对资源
+var stillURL = imageURL
+var taggedStillURL: URL?
+if let identifier = options.identifier, !identifier.isEmpty {
+    let output = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("lpimport-\(identifier).jpg")
+    do {
+        try writeTaggedStill(from: imageURL, to: output, identifier: identifier, maxPixel: options.maxPixel)
+    } catch {
+        fail("给静止帧写入 Live Photo 标识失败: \(error.localizedDescription)")
+    }
+    stillURL = output
+    taggedStillURL = output
+    logStderr("[lpimport] 已给静止帧写入标识 \(identifier) → \(output.lastPathComponent)")
+}
+
 var placeholderIdentifier: String?
 var importError: Error?
 let importSemaphore = DispatchSemaphore(value: 0)
@@ -212,8 +321,8 @@ PHPhotoLibrary.shared().performChanges({
     let request = PHAssetCreationRequest.forAsset()
 
     let photoOptions = PHAssetResourceCreationOptions()
-    photoOptions.originalFilename = imageURL.lastPathComponent
-    request.addResource(with: .photo, fileURL: imageURL, options: photoOptions)
+    photoOptions.originalFilename = stillURL.lastPathComponent
+    request.addResource(with: .photo, fileURL: stillURL, options: photoOptions)
 
     let videoOptions = PHAssetResourceCreationOptions()
     videoOptions.originalFilename = videoURL.lastPathComponent
@@ -239,13 +348,15 @@ if let error = importError {
     let ns = error as NSError
     var detail = "\(ns.domain) \(ns.code): \(ns.localizedDescription)"
     if ns.domain == "PHPhotosErrorDomain" && ns.code == 3302 {
-        detail += """
-
-        [提示] PHPhotosError 3302 = Photos 不接受这对资源。常见原因与对策：
-          1. 静止帧与视频的宽高比/尺寸不一致 → 用 MATCH_STILL_TO_VIDEO=1 让 worker 把静止帧对齐到视频尺寸
-          2. 视频带有与静止帧不匹配的 com.apple.quicktime.content.identifier → 确认 TAG_CONTENT_ID 未开启（默认关闭）
-          3. 视频时长/编码不达标 → 用 TRIM_SECONDS=2.9 或检查 ffmpeg 是否转成了 H.264/yuv420p
-        """
+        let hints = [
+            "",
+            "[提示] PHPhotosError 3302 = Photos 不接受这对资源。排查顺序：",
+            "  1. 静止帧的 Apple MakerNote tag 17 必须与视频的 content.identifier 一致",
+            "     （worker 默认会传 --identifier 并写入视频；设了 PAIR_IDENTIFIER=0 就会不一致）",
+            "  2. 尺寸/比例差异过大 → MATCH_STILL_TO_VIDEO=1",
+            "  3. 时长/编码不达标 → TRIM_SECONDS=2.9，确认是 H.264 + yuv420p",
+        ]
+        detail += "\n" + hints.joined(separator: "\n")
     }
     fail("合成 Live Photo 失败: \(detail)")
 }
@@ -266,11 +377,24 @@ if let albumName = options.album, !albumName.isEmpty {
     }
 }
 
+var taggedValue: Any = NSNull()
+if let taggedStillURL = taggedStillURL {
+    taggedValue = taggedStillURL.path
+    try? FileManager.default.removeItem(at: taggedStillURL)
+}
+
+var identifierValue: Any = NSNull()
+if let identifier = options.identifier, !identifier.isEmpty {
+    identifierValue = identifier
+}
+
 emit([
     "ok": true,
     "localIdentifier": assetIdentifier,
     "album": albumValue,
     "image": imageURL.path,
     "video": videoURL.path,
+    "taggedStill": taggedValue,
+    "identifier": identifierValue,
 ])
 

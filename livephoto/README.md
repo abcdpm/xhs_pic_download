@@ -141,7 +141,8 @@ docker exec xhs_pic_download node -e "fetch('http://192.168.0.88:7777/health').t
 | `TRIM_SECONDS` | 3 | Live 视频裁剪时长 |
 | `STILL_MAX_EDGE` | 0 | >0 时按最长边缩放静止帧（如 `1440`，让尺寸贴近 1080p 级视频） |
 | `MATCH_STILL_TO_VIDEO` | 0 | 置 1 时把静止帧按视频宽高居中裁剪（**尺寸/比例不一致导致 PHPhotosError 3302 时用这个**） |
-| `TAG_CONTENT_ID` | 0 | 置 1 时才往视频写 `com.apple.quicktime.content.identifier`；默认关闭，因为静止帧写不进同一标识，不一致会被 Photos 拒绝配对 |
+| `PAIR_IDENTIFIER` | 1 | 置 1 时生成 UUID，写进视频的 `content.identifier`，并由 lpimport 用 ImageIO 写进静止帧的 Apple MakerNote tag 17（两端一致 Photos 才认这对资源）。置 0 退回旧行为 |
+| `TAG_CONTENT_ID` | 0 | 仅在 `PAIR_IDENTIFIER=0` 时生效：单独给视频写标识（导出散文件用） |
 | `SIPS_FALLBACK` | 1 | ffmpeg 转换失败时用 macOS `sips` 兜底（HEIC 常见） |
 | `CONCURRENCY` | 1 | 同时合成数 |
 | `KEEP_FAILED` | 0 | 置 1 保留失败任务产物 |
