@@ -142,6 +142,7 @@ docker exec xhs_pic_download node -e "fetch('http://192.168.0.88:7777/health').t
 | `STILL_MAX_EDGE` | 0 | >0 时按最长边缩放静止帧（如 `1440`，让尺寸贴近 1080p 级视频） |
 | `MATCH_STILL_TO_VIDEO` | 0 | 置 1 时把静止帧按视频宽高居中裁剪（**尺寸/比例不一致导致 PHPhotosError 3302 时用这个**） |
 | `PAIR_IDENTIFIER` | 1 | 置 1 时生成 UUID，写进视频的 `content.identifier`，并由 lpimport 用 ImageIO 写进静止帧的 Apple MakerNote tag 17（两端一致 Photos 才认这对资源）。置 0 退回旧行为 |
+| `VIDEO_CODEC` | libx264 | 视频编码器。真机 Live Photo 是 HEVC(hvc1)，若配对仍失败可试 `VIDEO_CODEC=libx265` 或 `VIDEO_CODEC=hevc_videotoolbox`（会带 `-tag:v hvc1`） |
 | `TAG_CONTENT_ID` | 0 | 仅在 `PAIR_IDENTIFIER=0` 时生效：单独给视频写标识（导出散文件用） |
 | `SIPS_FALLBACK` | 1 | ffmpeg 转换失败时用 macOS `sips` 兜底（HEIC 常见） |
 | `CONCURRENCY` | 1 | 同时合成数 |

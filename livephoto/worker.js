@@ -26,6 +26,10 @@ const IMPORTER = process.env.IMPORTER || path.join(__dirname, 'bin', 'lpimport')
 const DEFAULT_ALBUM = process.env.ALBUM || '小红书'
 const WORK_DIR = process.env.WORK_DIR || path.join(os.tmpdir(), 'xhs-livephoto')
 const TRIM_SECONDS = Number(process.env.TRIM_SECONDS || 3)
+// 视频编码器：默认 libx264；真机 Live Photo 是 HEVC(hvc1)，
+// 若 Photos 对编码有要求，可用 VIDEO_CODEC=libx265 或 hevc_videotoolbox 做 A/B
+const VIDEO_CODEC = process.env.VIDEO_CODEC || 'libx264'
+const IS_HEVC = /265|hevc/i.test(VIDEO_CODEC)
 const CONCURRENCY = Number(process.env.CONCURRENCY || 1)
 const KEEP_FAILED = process.env.KEEP_FAILED === '1'
 // PhotoKit 配对要求「静止帧的 Apple MakerNote tag 17」与「视频的
@@ -162,6 +166,15 @@ async function prepareStill(input, output, videoSize) {
  */
 async function prepareVideo(input, output, contentIdentifier, tag) {
   const useTag = tag === true
+  const videoArgs = IS_HEVC
+    ? ['-c:v', VIDEO_CODEC, '-tag:v', 'hvc1', '-pix_fmt', 'yuv420p']
+    : ['-c:v', VIDEO_CODEC, '-profile:v', 'high', '-level', '4.1', '-pix_fmt', 'yuv420p']
+  if (/videotoolbox/i.test(VIDEO_CODEC)) {
+    videoArgs.push('-b:v', '8M')
+  } else {
+    videoArgs.push('-preset', 'veryfast', '-crf', '20')
+  }
+
   const args = [
     '-y',
     '-hide_banner',
@@ -175,18 +188,7 @@ async function prepareVideo(input, output, contentIdentifier, tag) {
     '0:v:0',
     '-map',
     '0:a:0?',
-    '-c:v',
-    'libx264',
-    '-profile:v',
-    'high',
-    '-level',
-    '4.1',
-    '-pix_fmt',
-    'yuv420p',
-    '-preset',
-    'veryfast',
-    '-crf',
-    '20',
+    ...videoArgs,
     '-c:a',
     'aac',
     '-b:a',
@@ -503,6 +505,7 @@ app.get('/health', (req, res) => {
     album: DEFAULT_ALBUM,
     concurrency: CONCURRENCY,
     trimSeconds: TRIM_SECONDS,
+    videoCodec: VIDEO_CODEC,
     stillMaxEdge: Number(process.env.STILL_MAX_EDGE || 0),
     tagContentId: TAG_CONTENT_ID,
     pairIdentifier: PAIR_IDENTIFIER,
