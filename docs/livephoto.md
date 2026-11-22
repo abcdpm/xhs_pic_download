@@ -135,8 +135,33 @@ iOS 快捷指令 ──(shareText)──> GET|POST /getXhsPicUrl
 
 ```json
 { "picUrlArray": [], "items": [],
-  "livePhotoJobs": [{ "ok": true, "jobId": "uuid", "imageUrl": "..." }] }
+  "livePhotoJobs": [{ "ok": true, "jobId": "uuid", "imageUrl": "..." }],
+  "livePhotoForward": { "at": "…", "target": "http://192.168.0.88:7777/livephoto",
+                        "attempted": 1, "ok": 1, "failed": 0, "lastError": null } }
 ```
+
+`import` 支持 `?import=1`、`?import=true`、body 里 `true` / `"true"` / `"1"`。
+
+**排查转发没生效**：`GET /status` 会直接告诉你配置与最近一次结果
+
+```bash
+curl -s http://<主服务>:7776/status | python3 -m json.tool
+```
+
+```json
+{
+  "livePhoto": { "workerUrl": "http://192.168.0.88:7777",
+                 "workerEndpoint": "http://192.168.0.88:7777/livephoto",
+                 "forwardingEnabled": true, "album": "小红书", "timeoutMs": 10000 },
+  "lastForward": { "attempted": 1, "ok": 0, "failed": 1,
+                   "lastError": "connect ECONNREFUSED 192.168.0.88:7777" },
+  "hint": "请求带 ?import=1 才会触发转发"
+}
+```
+
+- `forwardingEnabled: false` → 容器没配 `LIVEPHOTO_WORKER_URL`，或改了环境变量但没重建容器；
+- `lastForward` 为 `null` → 没有请求带 `import`（触发条件没满足）；
+- `lastForward.lastError` 有值 → 网络/权限问题，错误原文会写在里面。
 
 关于这两个环境变量的默认行为：
 
