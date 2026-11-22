@@ -11,7 +11,7 @@
  *   - image[i].stream.*：实况视频流里有没有音频相关地址
  */
 const axios = require('axios')
-const cheerio = require('cheerio')
+const { findDom, findNote } = require('../main')
 
 const UA =
   'Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1'
@@ -51,25 +51,14 @@ async function main() {
   console.log('note url:', url)
 
   const response = await axios.get(url, { headers: { 'user-agent': UA } })
-  const $ = cheerio.load(response.data)
-  let state = null
-  $('script').each((index, script) => {
-    const text = $(script).html() || ''
-    if (text.includes('window.__INITIAL_STATE__')) {
-      const start = text.indexOf('{')
-      const end = text.lastIndexOf('}')
-      if (start !== -1 && end !== -1) {
-        state = JSON.parse(text.slice(start, end + 1))
-      }
-    }
-  })
+  // 复用主服务的解析（会处理 XHS 里非法的 undefined）
+  const state = await findDom(response.data)
   if (!state) {
     console.error('页面里没解析到 window.__INITIAL_STATE__')
     process.exit(1)
   }
 
-  const note =
-    state?.note?.noteDetailMap?.[state?.note?.firstNoteId]?.note || state?.noteData?.data?.noteData
+  const note = findNote(state)
   if (!note) {
     console.error('页面结构里没找到 note（可能需要登录或笔记已删除）')
     process.exit(1)

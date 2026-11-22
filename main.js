@@ -262,3 +262,4 @@ function buildItems(imageList, note) {
 module.exports.buildItems = buildItems
 module.exports.extractPicId = extractPicId
 module.exports.findNote = findNote
+module.exports.findDom = findDom
