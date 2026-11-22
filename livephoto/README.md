@@ -46,6 +46,15 @@ curl -s -X POST http://127.0.0.1:7777/livephoto \
   -d '{"imageUrl":"https://example.com/a.jpg","videoUrl":"https://example.com/a.mov","wait":true}'
 ```
 
+最省事的验证方式是浏览器打开 **http://127.0.0.1:7777/** ，把小红书「复制链接」拿到的分享文本粘进去 —— 它会调用 `/livephoto/from-link`，自动解析该笔记并把所有 Live Photo 一次性合成（需要先在仓库根目录 `npm install`，worker 会复用 `main.js` 的解析逻辑）：
+
+```bash
+curl -s -X POST http://127.0.0.1:7777/livephoto/from-link \
+  -H 'content-type: application/json' \
+  -d '{"shareText":"<小红书分享文本>"}'
+# => {"ok":true,"livePhotoCount":2,"totalItems":3,"jobs":[{...}]}
+```
+
 `./build.sh` 会做这些事（任何一步失败都会明确报错退出）：
 
 1. 预检：macOS、`xcrun`/`swiftc`、`plutil`、源文件与 `Info.plist`

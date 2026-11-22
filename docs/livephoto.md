@@ -167,6 +167,7 @@ iOS 快捷指令 ──(shareText)──> GET|POST /getXhsPicUrl
 |---|---|---|
 | GET | `/health` | 依赖/队列状态（`importerExists` 必须为 true） |
 | POST | `/livephoto` | `{ imageUrl, videoUrl, album?, takenAt?, wait? }` |
+| POST | `/livephoto/from-link` | `{ shareText, album? }`：直接给分享文本，worker 复用 `main.js` 解析后合成该笔记的所有 Live Photo（需在仓库根目录 `npm install`） |
 | POST | `/livephoto/batch` | `{ items: [{imageUrl, videoUrl}], album? }` |
 | GET | `/jobs` / `/jobs/:id` | `queued/running/done/failed` + `step` |
 | GET | `/` | 调试页面，粘贴两个地址手动试合成 |

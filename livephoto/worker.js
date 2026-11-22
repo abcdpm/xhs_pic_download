@@ -388,6 +388,65 @@ app.post('/livephoto', async (req, res) => {
   }
 })
 
+// 直接给一条分享链接就能合成（复用主服务的解析逻辑，方便脱离容器/快捷指令做验证）
+app.post('/livephoto/from-link', async (req, res) => {
+  try {
+    const body = req.body || {}
+    const shareText = typeof body.shareText === 'string' ? body.shareText.trim() : ''
+    if (!shareText) {
+      res.status(400).json({ ok: false, error: '缺少 shareText（小红书分享文本或链接）' })
+      return
+    }
+
+    let parseShare
+    try {
+      parseShare = require('../main')
+    } catch (error) {
+      res.status(501).json({
+        ok: false,
+        error: `无法加载主服务解析模块（${error.message}）。请先在仓库根目录执行 npm install`,
+      })
+      return
+    }
+
+    const result = await parseShare({ shareText, xhsCookie: body.xhsCookie }, null)
+    if (result.error) {
+      res.status(400).json({ ok: false, error: result.error })
+      return
+    }
+
+    const targets = (result.items || []).filter(
+      (item) => item.isLivePhoto && item.imageUrl && item.livePhotoVideoUrl
+    )
+    if (targets.length === 0) {
+      res.json({
+        ok: true,
+        livePhotoCount: 0,
+        totalItems: (result.items || []).length,
+        message: '这条笔记里没有 Live Photo（items 里没有 isLivePhoto=true 的项）',
+        items: result.items || [],
+      })
+      return
+    }
+
+    const jobs = targets.map((item) =>
+      enqueue({
+        imageUrl: item.imageUrl,
+        videoUrl: item.livePhotoVideoUrl,
+        album: body.album,
+      })
+    )
+    res.json({
+      ok: true,
+      livePhotoCount: jobs.length,
+      totalItems: (result.items || []).length,
+      jobs: jobs.map(publicJob),
+    })
+  } catch (error) {
+    res.status(400).json({ ok: false, error: error.message })
+  }
+})
+
 app.post('/livephoto/batch', async (req, res) => {
   try {
     const body = req.body || {}
@@ -428,29 +487,53 @@ app.get('/jobs/:id', (req, res) => {
   res.json(publicJob(job))
 })
 
-// 极简调试页面：粘贴「图片地址 + 视频地址」手动试合成
+// 极简调试页面：可以直接粘贴小红书分享文本，或手动填「图片地址 + 视频地址」
 app.get('/', (req, res) => {
   res.type('html').send(`<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><title>xhs-livephoto worker</title>
 <style>body{font-family:-apple-system,sans-serif;max-width:640px;margin:40px auto;padding:0 16px}
-input,button{width:100%;padding:8px;margin:6px 0;box-sizing:border-box}pre{background:#f4f4f4;padding:12px;white-space:pre-wrap}</style>
+input,textarea,button{width:100%;padding:8px;margin:6px 0;box-sizing:border-box}
+pre{background:#f4f4f4;padding:12px;white-space:pre-wrap;word-break:break-all}</style>
 </head><body>
-<h3>Live Photo 合成（调试用）</h3>
+<h3>1. 粘贴小红书分享链接（推荐）</h3>
+<form id="fl">
+  <textarea name="shareText" rows="3" placeholder="粘贴「复制链接」得到的分享文本，如：xxx http://xhslink.com/xxxx 复制本条信息..." required></textarea>
+  <input name="album" placeholder="相簿名（默认 ${DEFAULT_ALBUM}）">
+  <button>解析并合成全部 Live Photo</button>
+</form>
+<pre id="out1"></pre>
+
+<h3>2. 手动填图片 + 视频地址</h3>
 <form id="f">
-  <input name="imageUrl" placeholder="静止帧图片地址 (jpeg)" required>
+  <input name="imageUrl" placeholder="静止帧图片地址 (jpeg/heic)" required>
   <input name="videoUrl" placeholder="Live Photo 视频地址 (mov/mp4)" required>
   <input name="album" placeholder="相簿名（默认 ${DEFAULT_ALBUM}）">
   <button>合成并写入照片图库</button>
 </form>
-<pre id="out"></pre>
+<pre id="out2"></pre>
+
 <script>
-document.getElementById('f').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const data = Object.fromEntries(new FormData(e.target).entries());
-  const out = document.getElementById('out');
+async function submit(url, form, out) {
+  const data = Object.fromEntries(new FormData(form).entries());
   out.textContent = '提交中…';
-  const res = await fetch('/livephoto', {method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(data)});
-  out.textContent = JSON.stringify(await res.json(), null, 2);
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    out.textContent = JSON.stringify(await res.json(), null, 2);
+  } catch (e) {
+    out.textContent = '请求失败: ' + e.message;
+  }
+}
+document.getElementById('fl').addEventListener('submit', (e) => {
+  e.preventDefault();
+  submit('/livephoto/from-link', e.target, document.getElementById('out1'));
+});
+document.getElementById('f').addEventListener('submit', (e) => {
+  e.preventDefault();
+  submit('/livephoto', e.target, document.getElementById('out2'));
 });
 </script>
 </body></html>`)
