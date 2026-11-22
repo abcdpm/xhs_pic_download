@@ -255,19 +255,19 @@ func writeTaggedStill(from source: URL, to destination: URL, identifier: String,
     }
 
     // MakerApple 字典的 key 形式在不同系统上表现不同，两种都试，写完读回校验
-    let keyForms: [[AnyHashable: Any]] = [
-        [17: identifier],
-        ["17": identifier],
+    let keyForms: [(label: String, dict: [AnyHashable: Any])] = [
+        ("数字 17", [17: identifier]),
+        ("字符串 \"17\"", ["17": identifier]),
     ]
     var lastError: Error?
     for form in keyForms {
         do {
-            try writeJPEG(cgImage: cgImage, to: destination, makerApple: form)
+            try writeJPEG(cgImage: cgImage, to: destination, makerApple: form.dict)
             if readMakerAppleIdentifier(from: destination) == identifier {
                 return
             }
             lastError = NSError(domain: "lpimport", code: 12, userInfo: [
-                NSLocalizedDescriptionKey: "写入 MakerApple 后读回校验失败（key: \(form.keys.first ?? "?")）"
+                NSLocalizedDescriptionKey: "写入 MakerApple 后读回校验失败（key: \(form.label)）"
             ])
         } catch {
             lastError = error
