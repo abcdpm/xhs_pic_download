@@ -116,51 +116,78 @@ SWIFT_TARGET="${SWIFT_TARGET:-${HOST_ARCH}-apple-macosx${MIN_MACOS}}"
 SDK_VERSION="$(xcrun --sdk macosx --show-sdk-version 2>/dev/null || echo unknown)"
 
 # ---------- 工具链诊断 ----------
+# 新版工具链布局（Xcode 15+/CLT 新版）：
+#   - 标准库「模块」在 SDK 里：$SDK/usr/lib/swift/Swift.swiftmodule
+#   - 运行时 dylib 在系统：  /usr/lib/swift/libswiftCore.dylib
+#   - $DEV/usr/lib/swift/macosx 里只有 libswiftCompatibility*.a 之类的兼容库
+# 所以判断依据是「SDK 模块 + 系统运行时 + 真编译一次」，而不是找 libswiftCore.dylib。
 diagnose() {
-  local dev_dir swiftc_path swift_ver sdk_path found=0 d
-  local dirs=()
+  local dev_dir swiftc_path swift_ver sdk_path sdk_from_info
+  local modules_ok=0 runtime_ok=0 compile_ok=0
   dev_dir="$(xcode-select -p 2>/dev/null || true)"
   swiftc_path="$(xcrun -f swiftc 2>/dev/null || true)"
   sdk_path="$(xcrun --sdk macosx --show-sdk-path 2>/dev/null || true)"
   if [[ -n "$swiftc_path" ]]; then
-    swift_ver="$("$swiftc_path" --version 2>&1 | head -2 | tr '\n' ' ' || true)"
+    swift_ver="$("$swiftc_path" --version 2>&1 | head -1 || true)"
+    sdk_from_info="$("$swiftc_path" -print-target-info 2>/dev/null \
+      | sed -n 's/.*"sdkPath"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1 || true)"
   else
     swift_ver="未知"
+    sdk_from_info=""
   fi
 
   log "=== Swift 工具链诊断 ==="
-  printf '  macOS        : %s (%s)\n' "$(sw_vers -productVersion 2>/dev/null || echo unknown)" "$HOST_ARCH"
-  printf '  xcode-select : %s\n' "${dev_dir:-未安装 / 未选择}"
+  printf '  macOS         : %s (%s)\n' "$(sw_vers -productVersion 2>/dev/null || echo unknown)" "$HOST_ARCH"
+  printf '  xcode-select  : %s\n' "${dev_dir:-未安装 / 未选择}"
   if [[ -d /Applications/Xcode.app ]]; then
-    printf '  Xcode.app    : 已安装（可用 sudo xcode-select -s /Applications/Xcode.app 切换）\n'
+    printf '  Xcode.app     : 已安装（可 sudo xcode-select -s /Applications/Xcode.app）\n'
   else
-    printf '  Xcode.app    : 未安装\n'
+    printf '  Xcode.app     : 未安装\n'
   fi
-  printf '  swiftc       : %s\n' "${swiftc_path:-找不到}"
-  printf '  swiftc 版本  : %s\n' "$swift_ver"
-  printf '  macOS SDK    : %s (version %s)\n' "${sdk_path:-未知}" "$SDK_VERSION"
-  printf '  编译目标     : %s\n' "$SWIFT_TARGET"
+  printf '  swiftc        : %s\n' "${swiftc_path:-找不到}"
+  printf '  swiftc 版本   : %s\n' "$swift_ver"
+  printf '  macOS SDK     : %s (version %s)\n' "${sdk_path:-未知}" "$SDK_VERSION"
+  printf '  SDK(工具链)   : %s\n' "${sdk_from_info:-未知}"
+  printf '  编译目标      : %s\n' "$SWIFT_TARGET"
 
-  [[ -n "$dev_dir" ]] && dirs+=("$dev_dir/usr/lib/swift/macosx" "$dev_dir/usr/lib/swift")
-  dirs+=("/usr/lib/swift")
-  for d in "${dirs[@]}"; do
-    if [[ -f "$d/libswiftCore.dylib" ]]; then
-      printf '  标准库       : OK   %s/libswiftCore.dylib\n' "$d"
-      found=1
-    elif [[ -d "$d" ]]; then
-      printf '  标准库       : 目录存在但缺 libswiftCore.dylib → %s\n' "$d"
-    else
-      printf '  标准库       : 缺失 %s\n' "$d"
-    fi
-  done
-
-  if (( found )); then
-    log "结论：找到了 macOS 标准库，工具链文件齐全"
+  local mod_dir="${sdk_path}/usr/lib/swift/Swift.swiftmodule"
+  if [[ -n "$sdk_path" && -d "$mod_dir" ]]; then
+    printf '  Swift 模块    : OK   %s（%s 个文件）\n' "$mod_dir" "$(ls -1 "$mod_dir" 2>/dev/null | wc -l | tr -d ' ')"
+    modules_ok=1
   else
-    warn "结论：没有找到 macOS 标准库 → Command Line Tools 装得不完整"
+    printf '  Swift 模块    : 缺失 %s\n' "$mod_dir"
+  fi
+
+  if [[ -f /usr/lib/swift/libswiftCore.dylib ]]; then
+    printf '  运行时 stdlib : OK   /usr/lib/swift/libswiftCore.dylib\n'
+    runtime_ok=1
+  else
+    printf '  运行时 stdlib : 缺失 /usr/lib/swift/libswiftCore.dylib\n'
+  fi
+
+  local probe_dir
+  probe_dir="$(mktemp -d)"
+  printf 'print("ok")\n' > "${probe_dir}/probe.swift"
+  if "$SWIFTC" -target "$SWIFT_TARGET" "${probe_dir}/probe.swift" -o "${probe_dir}/probe" \
+    >"${probe_dir}/out" 2>"${probe_dir}/err"; then
+    printf '  编译测试      : OK（hello world 可编译）\n'
+    compile_ok=1
+  else
+    printf '  编译测试      : 失败 → %s\n' "$(head -1 "${probe_dir}/err" | cut -c1-120)"
+  fi
+  rm -rf "$probe_dir"
+
+  echo
+  if (( compile_ok )); then
+    log "结论：工具链可以正常编译，直接 ./build.sh 即可"
+  elif (( modules_ok && runtime_ok )); then
+    warn "结论：SDK 模块和运行时都在，但仍编译失败 → 多半是 SDK 与工具链版本错配"
+    warn "建议：若已装 Xcode → sudo xcode-select -s /Applications/Xcode.app；否则重装 CLT 后重试"
+  else
+    warn "结论：工具链缺标准库（看上面「缺失」项）→ Command Line Tools 安装不完整"
     warn "修复 A：sudo rm -rf /Library/Developer/CommandLineTools && xcode-select --install"
-    warn "        （等 GUI 安装窗口跑到 100% 结束，再重新 ./build.sh）"
-    warn "修复 B：若已装完整 Xcode → sudo xcode-select -s /Applications/Xcode.app"
+    warn "        等安装窗口提示完成，再 xcrun -f swiftc && swiftc --version 验证，然后 ./build.sh"
+    warn "修复 B：sudo xcode-select -s /Applications/Xcode.app（已装完整 Xcode 时）"
   fi
 }
 
