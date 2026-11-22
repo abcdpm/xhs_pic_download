@@ -24,6 +24,7 @@ struct Options {
     var date: Date?
     var identifier: String?
     var maxPixel: Int = 0
+    var dump = false
     var quiet = false
 }
 
@@ -36,6 +37,7 @@ let usageLines = [
     "  --date       照片拍摄时间，ISO8601，如 2024-09-04T20:53:34Z",
     "  --identifier 写入静止帧 Apple MakerNote 的 Live Photo 标识（UUID），须与视频的一致",
     "  --max-pixel  静止帧最长边不超过该像素（0 表示不缩放，需配合 --identifier）",
+    "  --dump       打印静止帧的元数据（含 MakerApple），用于排查配对失败",
     "  --quiet, -q  不输出 warning",
     "  --version, -V 打印版本号",
 ]
@@ -112,6 +114,8 @@ func parseOptions(_ argv: [String]) -> Options {
             }
         case "--identifier":
             options.identifier = nextValue()
+        case "--dump":
+            options.dump = true
         case "--max-pixel":
             if let raw = nextValue(), let value = Int(raw) {
                 options.maxPixel = value
@@ -223,6 +227,22 @@ func writeJPEG(cgImage: CGImage, to url: URL, makerApple: [AnyHashable: Any]) th
     }
 }
 
+func dumpImageProperties(_ label: String, _ url: URL) {
+    guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+          let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+    else {
+        logStderr("[lpimport] dump \(label): 读取失败 \(url.path)")
+        return
+    }
+    let names = properties.keys.map { String(describing: $0) }.sorted()
+    logStderr("[lpimport] dump \(label): keys=\(names.joined(separator: ","))")
+    if let makerApple = properties[kCGImagePropertyMakerAppleDictionary] {
+        logStderr("[lpimport] dump \(label): MakerApple=\(makerApple)")
+    } else {
+        logStderr("[lpimport] dump \(label): 没有 MakerApple")
+    }
+}
+
 func readMakerAppleIdentifier(from url: URL) -> String? {
     guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
           let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
@@ -311,6 +331,11 @@ if let identifier = options.identifier, !identifier.isEmpty {
     stillURL = output
     taggedStillURL = output
     logStderr("[lpimport] 已给静止帧写入标识 \(identifier) → \(output.lastPathComponent)")
+}
+
+if options.dump {
+    dumpImageProperties("input", imageURL)
+    dumpImageProperties("tagged", stillURL)
 }
 
 var placeholderIdentifier: String?

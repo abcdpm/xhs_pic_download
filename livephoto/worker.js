@@ -197,6 +197,10 @@ async function prepareVideo(input, output, contentIdentifier, tag) {
   if (useTag) {
     args.push('-metadata', `com.apple.quicktime.content.identifier=${contentIdentifier}`)
   }
+  // 有些实现要求 MOV 里带 still-image-time 键，用于 A/B 测试
+  if (process.env.STILL_TIME_METADATA === '1') {
+    args.push('-metadata', 'com.apple.quicktime.still-image-time=0')
+  }
   args.push(output)
   await run(FFMPEG, args)
 }
@@ -253,6 +257,9 @@ async function importLivePhoto({ stillPath, videoPath, album, takenAt, identifie
   }
   if (maxPixel && maxPixel > 0) {
     args.push('--max-pixel', String(maxPixel))
+  }
+  if (process.env.DUMP_META === '1') {
+    args.push('--dump')
   }
   const { stdout, stderr } = await run(IMPORTER, args, 240000)
   if (stderr) {
