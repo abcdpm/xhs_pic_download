@@ -29,6 +29,7 @@ readonly VERSION_FILE="package.json"
 CLEAN=0
 VERSION=""
 BUILD_NUMBER=""
+DIAGNOSE=0
 
 usage() {
   cat <<'EOF'
@@ -40,6 +41,7 @@ usage() {
   ./build.sh --version 1.0.2     # 同上
   ./build.sh --build 42          # 指定构建号
   ./build.sh --clean             # 先清空 bin/ 再编译
+  ./build.sh --diagnose          # 只打印工具链诊断信息（编译失败时先跑这个）
   ./build.sh --help
 
 产物：
@@ -64,6 +66,7 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 ]] || die "--build 需要一个值，如 42"
       BUILD_NUMBER="$2"; shift 2 ;;
     --clean) CLEAN=1; shift ;;
+    --diagnose) DIAGNOSE=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "未知参数：$1（用 --help 查看用法）" ;;
   esac
@@ -111,6 +114,74 @@ esac
 MIN_MACOS="${MACOSX_DEPLOYMENT_TARGET:-11.0}"
 SWIFT_TARGET="${SWIFT_TARGET:-${HOST_ARCH}-apple-macosx${MIN_MACOS}}"
 SDK_VERSION="$(xcrun --sdk macosx --show-sdk-version 2>/dev/null || echo unknown)"
+
+# ---------- 工具链诊断 ----------
+diagnose() {
+  local dev_dir swiftc_path swift_ver sdk_path found=0 d
+  local dirs=()
+  dev_dir="$(xcode-select -p 2>/dev/null || true)"
+  swiftc_path="$(xcrun -f swiftc 2>/dev/null || true)"
+  sdk_path="$(xcrun --sdk macosx --show-sdk-path 2>/dev/null || true)"
+  if [[ -n "$swiftc_path" ]]; then
+    swift_ver="$("$swiftc_path" --version 2>&1 | head -2 | tr '\n' ' ' || true)"
+  else
+    swift_ver="未知"
+  fi
+
+  log "=== Swift 工具链诊断 ==="
+  printf '  macOS        : %s (%s)\n' "$(sw_vers -productVersion 2>/dev/null || echo unknown)" "$HOST_ARCH"
+  printf '  xcode-select : %s\n' "${dev_dir:-未安装 / 未选择}"
+  if [[ -d /Applications/Xcode.app ]]; then
+    printf '  Xcode.app    : 已安装（可用 sudo xcode-select -s /Applications/Xcode.app 切换）\n'
+  else
+    printf '  Xcode.app    : 未安装\n'
+  fi
+  printf '  swiftc       : %s\n' "${swiftc_path:-找不到}"
+  printf '  swiftc 版本  : %s\n' "$swift_ver"
+  printf '  macOS SDK    : %s (version %s)\n' "${sdk_path:-未知}" "$SDK_VERSION"
+  printf '  编译目标     : %s\n' "$SWIFT_TARGET"
+
+  [[ -n "$dev_dir" ]] && dirs+=("$dev_dir/usr/lib/swift/macosx" "$dev_dir/usr/lib/swift")
+  dirs+=("/usr/lib/swift")
+  for d in "${dirs[@]}"; do
+    if [[ -f "$d/libswiftCore.dylib" ]]; then
+      printf '  标准库       : OK   %s/libswiftCore.dylib\n' "$d"
+      found=1
+    elif [[ -d "$d" ]]; then
+      printf '  标准库       : 目录存在但缺 libswiftCore.dylib → %s\n' "$d"
+    else
+      printf '  标准库       : 缺失 %s\n' "$d"
+    fi
+  done
+
+  if (( found )); then
+    log "结论：找到了 macOS 标准库，工具链文件齐全"
+  else
+    warn "结论：没有找到 macOS 标准库 → Command Line Tools 装得不完整"
+    warn "修复 A：sudo rm -rf /Library/Developer/CommandLineTools && xcode-select --install"
+    warn "        （等 GUI 安装窗口跑到 100% 结束，再重新 ./build.sh）"
+    warn "修复 B：若已装完整 Xcode → sudo xcode-select -s /Applications/Xcode.app"
+  fi
+}
+
+if (( DIAGNOSE )); then
+  diagnose
+  exit 0
+fi
+
+# ---------- 工具链自检 ----------
+# 用一个最小文件做 -typecheck：几秒内就能暴露「标准库缺失」这类环境问题，
+# 而不是等长编译到一半才失败。
+PROBE_DIR="$(mktemp -d)"
+printf 'let probe = 1\nprint(probe)\n' > "${PROBE_DIR}/probe.swift"
+log "自检 Swift 工具链（-typecheck，目标 ${SWIFT_TARGET}）"
+if ! PROBE_ERR="$("$SWIFTC" -typecheck -target "$SWIFT_TARGET" "${PROBE_DIR}/probe.swift" 2>&1)"; then
+  printf '%s\n' "$PROBE_ERR" | head -20 >&2
+  rm -rf "$PROBE_DIR"
+  die "Swift 工具链不可用（多数是标准库缺失 / Command Line Tools 未装完）。先运行：./build.sh --diagnose"
+fi
+rm -rf "$PROBE_DIR"
+log "工具链自检通过"
 
 # ---------- 生成带版本的 Info.plist ----------
 PLIST_BUILD="${BUILD_DIR}/Info.plist"
