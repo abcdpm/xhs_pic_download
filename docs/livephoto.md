@@ -321,7 +321,31 @@ docker exec xhs_pic_download node -e "fetch(process.env.LIVEPHOTO_WORKER_URL + '
   OCI 标签（version / revision / created / source）正确，push 已在本地 `registry:2` 上验证成功。
 - 仅 `lpimport` 的 Photos 写入需在 macOS 上验证（本环境无 Photos.framework）。
 
-## 9. 后续可选增强
+## 9. 已知问题：PHPhotosError 3302（生成件不被接受）
+
+排查记录（按时间顺序，结论明确）：
+
+| 尝试 | 结果 |
+|---|---|
+| 视频写 `content.identifier`、静止帧没有 | ❌ 3302 |
+| 两端都不写 | ❌ 3302 |
+| 两端写同一个 UUID（ImageIO 写静止帧的 MakerApple tag 17） | ❌ 3302 |
+| 静止帧与视频比例对齐（都是 3:4）/ 时长 2.9~3.0s | ❌ 3302 |
+| **导入 iPhone 原装的一对（HEIC + MOV，未做任何处理）** | ✅ **成功** |
+
+结论：**导入通道与 PhotoKit 用法没问题，是我们生成的文件缺少 Photos 校验所需的结构。**
+
+iPhone 原装 LIVE 素材的关键差异（`lpimport --dump` 对比得出）：
+
+- 静止帧的 Apple MakerNote 远不止 tag 17：真机还有 1/2/3/12/13/14/16/20/23/26/31/32/33/35/37/38/39/43/45…/97 等
+  几十个字段，我们（ImageIO）只写了 tag 17；
+- MOV 里除了 `content.identifier` 还有一条 **`com.apple.quicktime.still-image-time` 定时元数据轨**
+  （标记哪一帧是封面），ffmpeg 只能写"键"，写不出这条轨。
+
+下一步方向：用 `AVAssetWriter` 重写视频，补出 still-image-time 轨；
+若仍失败，再考虑把整条 MakerNote 从真机素材复制过来（ImageIO 支持整体写入 MakerApple 字典）。
+
+## 10. 后续可选增强
 
 - 把笔记发布时间作为 `takenAt` 传入，导入时设置 `creationDate`，相册时间线更真实（worker 已支持）。
 - 失败重试队列 + Bark / Server 酱推送。
