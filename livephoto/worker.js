@@ -81,6 +81,7 @@ async function download(url, filePath) {
     maxRedirects: 5,
     headers: DOWNLOAD_HEADERS,
   })
+  const contentType = String(response.headers['content-type'] || 'unknown')
   await new Promise((resolve, reject) => {
     response.data.on('error', reject)
     writer.on('error', reject)
@@ -91,7 +92,7 @@ async function download(url, filePath) {
   if (stat.size === 0) {
     throw new Error(`下载结果为空: ${url}`)
   }
-  return stat.size
+  return { size: stat.size, contentType }
 }
 
 /**
@@ -205,12 +206,31 @@ async function runJob(job) {
   job.dir = jobDir
 
   job.step = 'download'
-  const imageBytes = await download(job.imageUrl, rawImage)
-  const videoBytes = await download(job.videoUrl, rawVideo)
+  const image = await download(job.imageUrl, rawImage)
+  const video = await download(job.videoUrl, rawVideo)
+  job.downloads = {
+    image: { bytes: image.size, contentType: image.contentType },
+    video: { bytes: video.size, contentType: video.contentType },
+  }
+  console.info(
+    `[job ${job.id}] downloaded image=${image.size}B(${image.contentType}) video=${video.size}B(${video.contentType})`
+  )
 
   job.step = 'transcode'
-  await prepareStill(rawImage, stillPath)
-  await prepareVideo(rawVideo, videoPath, job.contentIdentifier)
+  try {
+    await prepareStill(rawImage, stillPath)
+  } catch (error) {
+    throw new Error(
+      `静止帧转码失败（下载到 ${image.size} 字节，content-type=${image.contentType}）: ${error.message}`
+    )
+  }
+  try {
+    await prepareVideo(rawVideo, videoPath, job.contentIdentifier)
+  } catch (error) {
+    throw new Error(
+      `视频转码失败（下载到 ${video.size} 字节，content-type=${video.contentType}）: ${error.message}`
+    )
+  }
 
   job.step = 'import'
   const result = await importLivePhoto({
@@ -224,8 +244,8 @@ async function runJob(job) {
   job.result = {
     localIdentifier: result.localIdentifier,
     album: result.album,
-    imageBytes,
-    videoBytes,
+    imageBytes: image.size,
+    videoBytes: video.size,
   }
   if (!KEEP_FAILED) {
     await fsp.rm(jobDir, { recursive: true, force: true })
@@ -304,6 +324,7 @@ function publicJob(job) {
     album: job.album,
     imageUrl: job.imageUrl,
     videoUrl: job.videoUrl,
+    downloads: job.downloads || null,
     result: job.result || null,
     error: job.error || null,
     createdAt: job.createdAt,
@@ -436,6 +457,10 @@ app.post('/livephoto/from-link', async (req, res) => {
         album: body.album,
       })
     )
+    if (body.wait === true) {
+      const timeout = Number(body.waitTimeoutMs) || 240000
+      await Promise.all(jobs.map((job) => waitForJob(job, timeout)))
+    }
     res.json({
       ok: true,
       livePhotoCount: jobs.length,
