@@ -8,13 +8,39 @@ var app = express();
 app.disable("x-powered-by");
 app.use(bodyParser.json({ limit: "16kb" }));
 
-// 可选：配置 LIVEPHOTO_WORKER_URL 后，请求带 ?import=1 会把 Live Photo 任务直接投递给 Mac 上的合成 worker
+// 只要配置了 LIVEPHOTO_WORKER_URL，解析出 Live Photo 就自动投递给 Mac 上的合成 worker；
+// 不再需要 ?import=1。可用 ?import=0 单次关闭，或 LIVEPHOTO_AUTO_IMPORT=0 全局关闭。
 const LIVEPHOTO_WORKER_URL = process.env.LIVEPHOTO_WORKER_URL || '';
 const LIVEPHOTO_ALBUM = process.env.LIVEPHOTO_ALBUM || '小红书';
 const LIVEPHOTO_TIMEOUT = Number(process.env.LIVEPHOTO_TIMEOUT || 10000);
+const LIVEPHOTO_AUTO_IMPORT = process.env.LIVEPHOTO_AUTO_IMPORT !== '0';
 const WORKER_ENDPOINT = LIVEPHOTO_WORKER_URL
   ? `${LIVEPHOTO_WORKER_URL.replace(/\/+$/, '')}/livephoto`
   : null;
+
+/** 读取调用方的 import 开关：true=强制转发，false=本次不转发，null=未表态 */
+function readImportFlag(req) {
+  const queryFlag = req.query.import;
+  const bodyFlag = req.body ? req.body.import : undefined;
+  const value = queryFlag !== undefined ? queryFlag : bodyFlag;
+  if (value === undefined || value === null) {
+    return null;
+  }
+  const text = String(value).toLowerCase();
+  if (text === '1' || text === 'true') {
+    return true;
+  }
+  if (text === '0' || text === 'false') {
+    return false;
+  }
+  return null;
+}
+
+function pickLiveItems(result) {
+  return (result.items || []).filter(
+    (item) => item.isLivePhoto && item.livePhotoVideoUrl && item.imageUrl
+  );
+}
 
 // 最近一次转发的结果，暴露在 /status 上，便于判断"没触发 / 触发但失败"
 let lastForward = null;
@@ -77,34 +103,26 @@ app.all("/getXhsPicUrl", async function (req, res) {
       },
       null
     );
-    // 兼容 ?import=1 / ?import=true / body {"import": true|"true"|"1"}
-    const importFlag = req.query.import;
-    const bodyFlag = req.body ? req.body.import : undefined;
-    const shouldImport =
-      importFlag === '1' ||
-      importFlag === 'true' ||
-      bodyFlag === true ||
-      bodyFlag === 'true' ||
-      bodyFlag === '1';
+    const importFlag = readImportFlag(req);
+    const liveItems = pickLiveItems(result);
+    const autoEnabled = LIVEPHOTO_AUTO_IMPORT || importFlag === true;
+    const wantForward = !result.error && importFlag !== false && liveItems.length > 0 && autoEnabled;
 
-    if (shouldImport && !result.error) {
-      if (!LIVEPHOTO_WORKER_URL) {
-        // 没配 worker 地址时不算错误，但要明确告诉调用方"没有转发"，避免以为已合成
-        console.warn('[livephoto] 请求带 import=1，但未配置 LIVEPHOTO_WORKER_URL，已跳过转发');
-        rememberForward({
-          target: null,
-          attempted: 0,
-          ok: 0,
-          failed: 0,
-          lastError: 'LIVEPHOTO_WORKER_URL 未配置',
-        });
-        result.livePhotoJobs = [];
-        result.livePhotoWarning = '未配置 LIVEPHOTO_WORKER_URL，Live Photo 未转发（不影响图片/视频下载）';
-      } else {
-        result.livePhotoJobs = await forwardToLivePhotoWorker(result.items);
-        result.livePhotoForward = lastForward;
-      }
-    } else if (shouldImport && result.error) {
+    if (wantForward && LIVEPHOTO_WORKER_URL) {
+      result.livePhotoJobs = await forwardToLivePhotoWorker(result.items);
+      result.livePhotoForward = lastForward;
+    } else if (wantForward && !LIVEPHOTO_WORKER_URL) {
+      // 检测到 Live Photo 但没配 worker：不报错，明确告知即可
+      console.warn('[livephoto] 检测到 Live Photo，但未配置 LIVEPHOTO_WORKER_URL，未自动合成');
+      rememberForward({
+        target: null,
+        attempted: 0,
+        ok: 0,
+        failed: 0,
+        lastError: 'LIVEPHOTO_WORKER_URL 未配置',
+      });
+      result.livePhotoWarning = '检测到 Live Photo，但未配置 LIVEPHOTO_WORKER_URL，未自动合成（不影响图片/视频下载）';
+    } else if (importFlag === true && result.error) {
       result.livePhotoWarning = `解析失败，未转发：${result.error}`;
     }
     res.send(JSON.stringify(result));
@@ -127,11 +145,12 @@ app.get("/status", (req, res) => {
       album: LIVEPHOTO_ALBUM,
       timeoutMs: LIVEPHOTO_TIMEOUT,
       forwardingEnabled: Boolean(LIVEPHOTO_WORKER_URL),
+      autoImport: LIVEPHOTO_AUTO_IMPORT,
     },
     lastForward,
     hint:
       LIVEPHOTO_WORKER_URL
-        ? '请求带 ?import=1 才会触发转发'
+        ? '解析到 Live Photo 会自动转发；可用 ?import=0 单次关闭'
         : '未配置 LIVEPHOTO_WORKER_URL：请用 -e LIVEPHOTO_WORKER_URL=http://<Mac IP>:7777 重建容器',
   });
 });

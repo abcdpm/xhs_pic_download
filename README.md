@@ -89,7 +89,8 @@ node worker.js                # 首次运行请允许「访问您的照片」
 
 > 上游已改为返回原图（不带 `imageView2` 参数），格式可能是 jpeg/webp/heic；worker 会统一转成 JPEG 后再参与 Live Photo 配对。
 
-可选：设置 `LIVEPHOTO_WORKER_URL=http://127.0.0.1:7777` 后，请求带 `?import=1` 会由服务端自动把 Live Photo 任务投递给 Mac 上的 worker。
+只要容器配了 `LIVEPHOTO_WORKER_URL=http://<Mac IP>:7777`，解析到 Live Photo 就会**自动**投递给 Mac 合成，**不需要任何额外参数**；
+想单次关闭用 `?import=0`，想改成"必须显式请求才转发"用 `LIVEPHOTO_AUTO_IMPORT=0`。
 
 ## 测试
 

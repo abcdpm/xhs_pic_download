@@ -131,7 +131,8 @@ iOS 快捷指令 ──(shareText)──> GET|POST /getXhsPicUrl
 
 > `imageUrl` 就是**原图**（上游已去掉 `imageView2` 参数），格式可能是 jpeg/webp/heic，worker 会统一转 JPEG。
 
-可选：设置 `LIVEPHOTO_WORKER_URL` 后，请求带 `?import=1`（或 body `{"import": true}`）时服务端自动把 `isLivePhoto` 的条目投递给 worker：
+**自动合成**：只要配置了 `LIVEPHOTO_WORKER_URL`，解析到 Live Photo 就会**自动**投递给 worker，**不需要任何额外参数**。
+需要单次关闭用 `?import=0`，全局关闭用 `LIVEPHOTO_AUTO_IMPORT=0`。
 
 ```json
 { "picUrlArray": [], "items": [],
@@ -140,7 +141,7 @@ iOS 快捷指令 ──(shareText)──> GET|POST /getXhsPicUrl
                         "attempted": 1, "ok": 1, "failed": 0, "lastError": null } }
 ```
 
-`import` 支持 `?import=1`、`?import=true`、body 里 `true` / `"true"` / `"1"`。
+`import` 参数可省略（默认自动）；`?import=0` / body `{"import": false}` 表示本次不转发。
 
 **排查转发没生效**：`GET /status` 会直接告诉你配置与最近一次结果
 
@@ -155,34 +156,34 @@ curl -s http://<主服务>:7776/status | python3 -m json.tool
                  "forwardingEnabled": true, "album": "小红书", "timeoutMs": 10000 },
   "lastForward": { "attempted": 1, "ok": 0, "failed": 1,
                    "lastError": "connect ECONNREFUSED 192.168.0.88:7777" },
-  "hint": "请求带 ?import=1 才会触发转发"
+  "hint": "解析到 Live Photo 会自动转发；可用 ?import=0 单次关闭"
 }
 ```
 
 - `forwardingEnabled: false` → 容器没配 `LIVEPHOTO_WORKER_URL`，或改了环境变量但没重建容器；
-- `lastForward` 为 `null` → 没有请求带 `import`（触发条件没满足）；
+- `lastForward` 为 `null` → 还没有解析到过 Live Photo（自动转发没被触发过）；
 - `lastForward.lastError` 有值 → 网络/权限问题，错误原文会写在里面。
 
-关于这两个环境变量的默认行为：
+关于这几个环境变量的默认行为：
 
 | 变量 | 不配置时 | 结论 |
 |---|---|---|
 | `LIVEPHOTO_ALBUM` | 默认就是 `小红书`（worker 侧 `ALBUM` 也是同一默认值） | **不配等于配成这个名字**，只有想换相簿名时才需要设 |
-| `LIVEPHOTO_WORKER_URL` | 为空，`?import=1` 不生效 | 服务功能完全正常（图片/视频/items 都在），只是不会转发给 Mac |
+| `LIVEPHOTO_WORKER_URL` | 为空 → 不自动合成 | 服务功能完全正常（图片/视频/items 都在），只是不会转发给 Mac；配置后**自动生效** |
+| `LIVEPHOTO_AUTO_IMPORT` | 默认开启 | 置 `0` 时变成"只有显式 `?import=1` 才转发" |
 
 > 相簿默认名已从 `小红书Live` 改为 `小红书`。之前用旧名字导入的照片不会被删除或迁移，
 > 新导入的 Live Photo 会落到「小红书」相簿；若想继续沿用旧相簿，把 worker 的 `ALBUM` 和
 > 容器的 `LIVEPHOTO_ALBUM` 都显式设成 `小红书Live`。
 
-不配 `LIVEPHOTO_WORKER_URL` 但请求带了 `import=1` 时**不会报错**，而是明确告诉你没转发：
+没配 `LIVEPHOTO_WORKER_URL` 但解析到 Live Photo 时**不会报错**，只是明确告诉你没合成：
 
 ```json
 { "picUrlArray": [...], "items": [...],
-  "livePhotoJobs": [],
-  "livePhotoWarning": "未配置 LIVEPHOTO_WORKER_URL，Live Photo 未转发（不影响图片/视频下载）" }
+  "livePhotoWarning": "检测到 Live Photo，但未配置 LIVEPHOTO_WORKER_URL，未自动合成（不影响图片/视频下载）" }
 ```
 
-服务端日志同时打印：`[livephoto] 请求带 import=1，但未配置 LIVEPHOTO_WORKER_URL，已跳过转发`。
+服务端日志同时打印：`[livephoto] 检测到 Live Photo，但未配置 LIVEPHOTO_WORKER_URL，未自动合成`。
 配了但连不上时，`livePhotoJobs` 里每项会是 `{ "ok": false, "error": "connect ECONNREFUSED ..." }`。
 如果你走的是「快捷指令直连 worker」（方案 A），这个变量本来就不需要配。
 
@@ -305,13 +306,17 @@ docker exec xhs_pic_download node -e "fetch(process.env.LIVEPHOTO_WORKER_URL + '
 
 ## 6. iOS 快捷指令改造
 
-1. `获取 URL 内容` → `.../getXhsPicUrl?shareText=<剪贴板>`，得到 JSON。
-2. `重复` 遍历 `items`：
-   - `isLivePhoto` 为真 → `获取 URL 内容`（`POST`，JSON：`imageUrl = imageUrl`、`videoUrl = livePhotoVideoUrl`）请求 `http://<mac-mini>:7777/livephoto`；
-   - `type = image` → `存储图像`（用 `imageUrl`）；
-   - `type = video` → `存储视频`（用 `videoUrl`）。
-3. Mac 有固定地址时可省略循环，直接用 `?import=1`。
+**因为转发已经自动化**（只要容器配了 `LIVEPHOTO_WORKER_URL`），快捷指令里**不需要**任何 Live Photo 相关动作：
 
+1. `获取 URL 内容` → `https://<主服务>/getXhsPicUrl?shareText=<剪贴板>`
+2. `重复` 遍历 `items`：
+   - `type = image` 且 `isLivePhoto = false` → `存储图像`（用 `imageUrl`）
+   - `type = video` → `存储视频`（用 `videoUrl`）
+   - `isLivePhoto = true` → **跳过**（容器的 `/getXhsPicUrl` 已经把它投递给 Mac，合成后经 iCloud 同步到手机）
+
+> 如果先不接容器，也可以让快捷指令直连 Mac（方案 A）：`isLivePhoto` 为真时
+> `获取 URL 内容`（`POST` `http://<mac-mini>:7777/livephoto`，body：`imageUrl` + `videoUrl`）。
+>
 > 旧的快捷指令仍能工作（`picUrlArray` 未变），但会把 Live 视频当普通视频存一份，建议升级。
 
 
