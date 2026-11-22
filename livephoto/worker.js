@@ -254,7 +254,13 @@ async function importLivePhoto({ stillPath, videoPath, album, takenAt, identifie
   if (maxPixel && maxPixel > 0) {
     args.push('--max-pixel', String(maxPixel))
   }
-  const { stdout } = await run(IMPORTER, args, 240000)
+  const { stdout, stderr } = await run(IMPORTER, args, 240000)
+  if (stderr) {
+    stderr
+      .split('\n')
+      .filter(Boolean)
+      .forEach((line) => console.info(`[lpimport] ${line.trim()}`))
+  }
   const lastLine = stdout.split('\n').filter(Boolean).pop()
   let parsed = null
   try {
