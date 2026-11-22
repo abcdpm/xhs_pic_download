@@ -323,7 +323,7 @@ docker exec xhs_pic_download node -e "fetch(process.env.LIVEPHOTO_WORKER_URL + '
   OCI 标签（version / revision / created / source）正确，push 已在本地 `registry:2` 上验证成功。
 - 仅 `lpimport` 的 Photos 写入需在 macOS 上验证（本环境无 Photos.framework）。
 
-## 9. 已知问题：PHPhotosError 3302（生成件不被接受）
+## 9. 已解决：PHPhotosError 3302（生成件不被接受）
 
 排查记录（按时间顺序，结论明确）：
 
@@ -332,20 +332,29 @@ docker exec xhs_pic_download node -e "fetch(process.env.LIVEPHOTO_WORKER_URL + '
 | 视频写 `content.identifier`、静止帧没有 | ❌ 3302 |
 | 两端都不写 | ❌ 3302 |
 | 两端写同一个 UUID（ImageIO 写静止帧的 MakerApple tag 17） | ❌ 3302 |
-| 静止帧与视频比例对齐（都是 3:4）/ 时长 2.9~3.0s | ❌ 3302 |
-| **导入 iPhone 原装的一对（HEIC + MOV，未做任何处理）** | ✅ **成功** |
+| 静止帧与视频比例对齐（都是 3:4）/ 时长 2.9~3.0s / 换 HEVC | ❌ 3302 |
+| 导入 iPhone 原装的一对（HEIC + MOV，未做任何处理） | ✅ 成功 |
+| **我们的静止帧 + 真机 MOV** | ✅ **成功** ⇒ 静止帧侧合格，问题在 MOV |
+| **我们的静止帧 + 我们重写（补 still-image-time 轨）的 MOV** | ✅ **成功（最终方案）** |
 
-结论：**导入通道与 PhotoKit 用法没问题，是我们生成的文件缺少 Photos 校验所需的结构。**
+根因（两条同时成立才行）：
 
-iPhone 原装 LIVE 素材的关键差异（`lpimport --dump` 对比得出）：
+1. 静止帧的 Apple MakerNote tag 17 必须与视频的 `content.identifier` **一致**；
+2. 视频里必须有 **`mdta/com.apple.quicktime.still-image-time` 定时元数据轨**（ffmpeg 写不出，必须用 `AVAssetWriter`）。
 
-- 静止帧的 Apple MakerNote 远不止 tag 17：真机还有 1/2/3/12/13/14/16/20/23/26/31/32/33/35/37/38/39/43/45…/97 等
-  几十个字段，我们（ImageIO）只写了 tag 17；
-- MOV 里除了 `content.identifier` 还有一条 **`com.apple.quicktime.still-image-time` 定时元数据轨**
-  （标记哪一帧是封面），ffmpeg 只能写"键"，写不出这条轨。
+附带发现：这台 macOS 27.2 上，`AVAssetReader` 用 **passthrough**（`outputSettings: nil`）读 ffmpeg 产出的 MOV 会直接返回 nil（`status=reading`、无 error）。所以重写视频时必须走「解码为 32BGRA → 显式 H.264 重编码」，顺带保留 `preferredTransform` 竖屏方向。
 
-下一步方向：用 `AVAssetWriter` 重写视频，补出 still-image-time 轨；
-若仍失败，再考虑把整条 MakerNote 从真机素材复制过来（ImageIO 支持整体写入 MakerApple 字典）。
+最终管线：
+
+```
+原图(HEIC/JPEG) ──ImageIO──> JPEG + MakerApple[17]=UUID
+原视频(mp4) ──ffmpeg(纯转码/裁 3s)──> MOV ──AVAssetWriter(解码+重编码)──>
+    MOV：H.264 + content.identifier + still-image-time 轨
+两者 ──PHAssetCreationRequest(.photo + .pairedVideo)──> 真正的 Live Photo
+```
+
+> 关于"没有声音"：小红书很多实况视频本身就是静音的。worker 现在会在日志里标明
+> `video=… h264 +aac` 或 `video=… h264 无音轨`，可据此区分"源无声"与"处理丢音"。
 
 ## 10. 后续可选增强
 

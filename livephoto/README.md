@@ -140,7 +140,7 @@ docker exec xhs_pic_download node -e "fetch('http://192.168.0.88:7777/health').t
 | `ALBUM` | 小红书 | 目标相簿（不存在会自动创建） |
 | `TRIM_SECONDS` | 3 | Live 视频裁剪时长 |
 | `STILL_MAX_EDGE` | 0 | >0 时按最长边缩放静止帧（如 `1440`，让尺寸贴近 1080p 级视频） |
-| `MATCH_STILL_TO_VIDEO` | 0 | 置 1 时把静止帧按视频宽高居中裁剪（**尺寸/比例不一致导致 PHPhotosError 3302 时用这个**） |
+| `MATCH_STILL_TO_VIDEO` | 0 | 置 1 时把静止帧按视频宽高居中裁剪（仅在非配对模式兜底用；3302 已由标识 + still-image-time 轨解决） |
 | `PAIR_IDENTIFIER` | 1 | 置 1 时生成 UUID，写进视频的 `content.identifier`，并由 lpimport 用 ImageIO 写进静止帧的 Apple MakerNote tag 17（两端一致 Photos 才认这对资源）。置 0 退回旧行为 |
 | `VIDEO_CODEC` | libx264 | 视频编码器。真机 Live Photo 是 HEVC(hvc1)，若配对仍失败可试 `VIDEO_CODEC=libx265` 或 `VIDEO_CODEC=hevc_videotoolbox`（会带 `-tag:v hvc1`） |
 | `TAG_CONTENT_ID` | 0 | 仅在 `PAIR_IDENTIFIER=0` 时生效：单独给视频写标识（导出散文件用） |
@@ -179,3 +179,4 @@ tail -f /tmp/xhs-livephoto.err.log
 | 下载 0 字节 / 403 | CDN 防盗链，确认带了 UA/Referer（worker 已内置） |
 | 容器里连不上 worker | 用启动日志打印的局域网 IP（不要用 `127.0.0.1`）；`HOST` 保持 `0.0.0.0`；macOS 防火墙放行 `node` |
 | Mac 上有了但 iPhone 没有 | Mac「照片」需开启 iCloud 照片，且与 iPhone 同 Apple ID |
+| 相册里有 Live Photo 但**没有声音** | 看日志 `media … video=…` 是否标注 `无音轨`：若是，源视频本身静音（小红书实况视频常见）；若标了 `+aac` 却无声，请贴日志给我 |

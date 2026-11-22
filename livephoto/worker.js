@@ -225,7 +225,7 @@ async function probeImage(input) {
   return probeVideo(input)
 }
 
-/** 用 ffmpeg -i 的 stderr 解析视频/图片的尺寸、时长、编码 */
+/** 用 ffmpeg -i 的 stderr 解析视频/图片的尺寸、时长、编码、是否带音轨 */
 async function probeVideo(input) {
   let text = ''
   try {
@@ -237,6 +237,7 @@ async function probeVideo(input) {
   const size = /,\s(\d{2,5})x(\d{2,5})[\s,\[]/.exec(text)
   const duration = /Duration:\s(\d+):(\d+):(\d+(?:\.\d+)?)/.exec(text)
   const codec = /Video:\s([a-z0-9]+)/.exec(text)
+  const audioCodec = /Audio:\s([a-z0-9]+)/.exec(text)
   return {
     width: size ? Number(size[1]) : null,
     height: size ? Number(size[2]) : null,
@@ -244,6 +245,8 @@ async function probeVideo(input) {
       ? Number(duration[1]) * 3600 + Number(duration[2]) * 60 + Number(duration[3])
       : null,
     codec: codec ? codec[1] : null,
+    hasAudio: Boolean(audioCodec),
+    audioCodec: audioCodec ? audioCodec[1] : null,
   }
 }
 
@@ -320,7 +323,7 @@ async function runJob(job) {
   const fmt = (m) =>
     `${m.width || '?'}x${m.height || '?'}${m.duration ? ` ${m.duration.toFixed(2)}s` : ''}${
       m.codec ? ` ${m.codec}` : ''
-    }`
+    }${m.hasAudio === undefined ? '' : m.hasAudio ? ` +${m.audioCodec || 'audio'}` : ' 无音轨'}`
   console.info(`[job ${job.id}] media still=${fmt(stillMedia)} video=${fmt(videoMedia)}`)
 
   job.step = 'transcode'

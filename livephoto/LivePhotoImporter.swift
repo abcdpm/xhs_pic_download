@@ -397,7 +397,11 @@ func rewriteMovie(input: URL, output: URL, identifier: String) throws {
     // ---- 音频（可选）：有音轨就尝试 passthrough，拿不到首帧格式就放弃音频 ----
     var audioPair: (AVAssetReaderTrackOutput, AVAssetWriterInput)?
     var audioOutputRef: AVAssetReaderTrackOutput?
-    if let audioTrack = asset.tracks(withMediaType: .audio).first {
+    let audioTracks = asset.tracks(withMediaType: .audio)
+    if audioTracks.isEmpty {
+        logStderr("[lpimport] 源视频没有音轨（小红书实况视频常常是静音的），合成结果将无声")
+    }
+    if let audioTrack = audioTracks.first {
         let audioOutput = AVAssetReaderTrackOutput(track: audioTrack, outputSettings: nil)
         if reader.canAdd(audioOutput) {
             reader.add(audioOutput)
