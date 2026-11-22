@@ -402,6 +402,10 @@ streamDesc=WEB_LIVEPHOTO_19  audioCodec=""  audioBitrate=0  audioDuration=0  vol
 - 若出现 `music` 且带 `musicUrl` → 说明登录态才有，可用 `xhsCookie` + 签名接口取；
 - 若仍是 `audioBitrate: 0` 且无 `music` → 网页端确实没有音频，属平台限制。
 
+**如果确实要拿到 App 里的那份音频**，需要抓移动端流量，完整方案（iOS/Android/纯手机三种，
+含证书安装、QUIC 回落、pinning 绕过、以及现成的 mitmproxy 插件）见
+[`docs/capture-audio.md`](capture-audio.md)。抓到音频直链后直接填到下面的 `bgmUrl` 即可。
+
 ### 10.3 已内置「混音」能力（拿到 BGM 地址就能用）
 
 `POST /livephoto` 与 `/livephoto/from-link` 都支持可选 `bgmUrl`：

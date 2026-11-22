@@ -9,3 +9,7 @@ npm-debug.log*
 livephoto/bin/
 livephoto/node_modules/
 *.log
+
+# Python 缓存
+__pycache__/
+*.pyc
