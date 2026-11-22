@@ -72,7 +72,7 @@ curl -s -X POST http://127.0.0.1:7777/livephoto \
 
 ```json
 { "jobId": "…", "status": "done", "step": "done",
-  "result": { "localIdentifier": "…/L0/001", "album": "小红书Live" } }
+  "result": { "localIdentifier": "…/L0/001", "album": "小红书" } }
 ```
 
 打开「照片」应能看到新 Live Photo（左下角圆环标识），几秒后 iPhone 同步出现。
@@ -83,7 +83,7 @@ curl -s -X POST http://127.0.0.1:7777/livephoto \
 |---|---|---|
 | `HOST` | 0.0.0.0 | 监听地址。要跨机器/容器访问必须保持 `0.0.0.0` |
 | `PORT` | 7777 | 监听端口；启动日志会打印可用的局域网地址 |
-| `ALBUM` | 小红书Live | 目标相簿（不存在会自动创建） |
+| `ALBUM` | 小红书 | 目标相簿（不存在会自动创建） |
 | `TRIM_SECONDS` | 3 | Live 视频裁剪时长 |
 | `STILL_MAX_EDGE` | 0 | >0 时按最长边缩放静止帧（如 `1440`，让尺寸贴近 1080p 级视频） |
 | `SIPS_FALLBACK` | 1 | ffmpeg 转换失败时用 macOS `sips` 兜底（HEIC 常见） |

@@ -10,7 +10,7 @@ app.use(bodyParser.json({ limit: "16kb" }));
 
 // 可选：配置 LIVEPHOTO_WORKER_URL 后，请求带 ?import=1 会把 Live Photo 任务直接投递给 Mac 上的合成 worker
 const LIVEPHOTO_WORKER_URL = process.env.LIVEPHOTO_WORKER_URL || '';
-const LIVEPHOTO_ALBUM = process.env.LIVEPHOTO_ALBUM || '小红书Live';
+const LIVEPHOTO_ALBUM = process.env.LIVEPHOTO_ALBUM || '小红书';
 const LIVEPHOTO_TIMEOUT = Number(process.env.LIVEPHOTO_TIMEOUT || 10000);
 
 async function forwardToLivePhotoWorker(items) {

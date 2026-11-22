@@ -8,7 +8,7 @@
 //  Asset Identifier 由 Photos 自己生成，写入后随 iCloud 照片同步到 iPhone。
 //
 //  编译：./build.sh            （产物 livephoto/bin/lpimport）
-//  用法：lpimport --image a.jpg --video a.mov [--album "小红书Live"] [--date 2024-09-04T20:53:34Z] [--quiet]
+//  用法：lpimport --image a.jpg --video a.mov [--album "小红书"] [--date 2024-09-04T20:53:34Z] [--quiet]
 //
 //  注意：本文件是 swiftc 单文件可执行入口，顶层代码就是 main，请勿改动文件顺序。
 //

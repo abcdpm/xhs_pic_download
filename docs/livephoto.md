@@ -79,7 +79,7 @@ iOS 快捷指令 ──(shareText)──> GET|POST /getXhsPicUrl
 │    2) ffmpeg 转静态帧 → baseline JPEG（webp/heic 兜底：macOS sips）     │
 │    3) ffmpeg 规范化视频 → H.264 High + yuv420p + 3.000s + ContentId     │
 │    4) bin/lpimport（Swift + Photos.framework）                          │
-│         .photo + .pairedVideo → 相簿「小红书Live」                      │
+│         .photo + .pairedVideo → 相簿「小红书」                          │
 │    5) 清理临时文件，返回 localIdentifier                                │
 └──────────────────────────────────┬──────────────────────────────────────┘
                                    │ iCloud 照片
@@ -142,8 +142,12 @@ iOS 快捷指令 ──(shareText)──> GET|POST /getXhsPicUrl
 
 | 变量 | 不配置时 | 结论 |
 |---|---|---|
-| `LIVEPHOTO_ALBUM` | 默认就是 `小红书Live`（worker 侧 `ALBUM` 也是同一默认值） | **不配等于配成这个名字**，只有想换相簿名时才需要设 |
+| `LIVEPHOTO_ALBUM` | 默认就是 `小红书`（worker 侧 `ALBUM` 也是同一默认值） | **不配等于配成这个名字**，只有想换相簿名时才需要设 |
 | `LIVEPHOTO_WORKER_URL` | 为空，`?import=1` 不生效 | 服务功能完全正常（图片/视频/items 都在），只是不会转发给 Mac |
+
+> 相簿默认名已从 `小红书Live` 改为 `小红书`。之前用旧名字导入的照片不会被删除或迁移，
+> 新导入的 Live Photo 会落到「小红书」相簿；若想继续沿用旧相簿，把 worker 的 `ALBUM` 和
+> 容器的 `LIVEPHOTO_ALBUM` 都显式设成 `小红书Live`。
 
 不配 `LIVEPHOTO_WORKER_URL` 但请求带了 `import=1` 时**不会报错**，而是明确告诉你没转发：
 
@@ -175,7 +179,7 @@ iOS 快捷指令 ──(shareText)──> GET|POST /getXhsPicUrl
 |---|---|---|
 | `HOST` | 0.0.0.0 | 监听地址；跨机器/容器访问必须保持 `0.0.0.0` |
 | `PORT` | 7777 | 监听端口（默认仅本机，跨机请加反代/白名单） |
-| `ALBUM` | 小红书Live | 相簿名（不存在会自动创建） |
+| `ALBUM` | 小红书 | 相簿名（不存在会自动创建） |
 | `FFMPEG` | ffmpeg | Apple Silicon 通常是 `/opt/homebrew/bin/ffmpeg` |
 | `IMPORTER` | `./bin/lpimport` | Swift 导入器 |
 | `TRIM_SECONDS` | 3 | 视频裁剪时长（Apple 约定 3s） |

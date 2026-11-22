@@ -81,7 +81,7 @@ cat <<EOF
   docker rm -f xhs_pic_download
   docker run -d -p 7776:7776 --name xhs_pic_download \\
     -e LIVEPHOTO_WORKER_URL=http://<Mac 的局域网 IP>:7777 \\
-    -e LIVEPHOTO_ALBUM=小红书Live \\
+    -e LIVEPHOTO_ALBUM=小红书 \\
     ${IMAGE}:${VERSION}
 
 自检：
