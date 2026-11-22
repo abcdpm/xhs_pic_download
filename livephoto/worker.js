@@ -274,8 +274,11 @@ async function importLivePhoto({ stillPath, videoPath, album, takenAt, identifie
   if (stderr) {
     stderr
       .split('\n')
+      .map((line) => line.trim())
       .filter(Boolean)
-      .forEach((line) => console.info(`[lpimport] ${line.trim()}`))
+      .forEach((line) => {
+        console.info(line.startsWith('[lpimport]') ? line : `[lpimport] ${line}`)
+      })
   }
   const lastLine = stdout.split('\n').filter(Boolean).pop()
   let parsed = null
