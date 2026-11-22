@@ -236,7 +236,18 @@ PHPhotoLibrary.shared().performChanges({
 importSemaphore.wait()
 
 if let error = importError {
-    fail("合成 Live Photo 失败: \(error.localizedDescription)")
+    let ns = error as NSError
+    var detail = "\(ns.domain) \(ns.code): \(ns.localizedDescription)"
+    if ns.domain == "PHPhotosErrorDomain" && ns.code == 3302 {
+        detail += """
+
+        [提示] PHPhotosError 3302 = Photos 不接受这对资源。常见原因与对策：
+          1. 静止帧与视频的宽高比/尺寸不一致 → 用 MATCH_STILL_TO_VIDEO=1 让 worker 把静止帧对齐到视频尺寸
+          2. 视频带有与静止帧不匹配的 com.apple.quicktime.content.identifier → 确认 TAG_CONTENT_ID 未开启（默认关闭）
+          3. 视频时长/编码不达标 → 用 TRIM_SECONDS=2.9 或检查 ffmpeg 是否转成了 H.264/yuv420p
+        """
+    }
+    fail("合成 Live Photo 失败: \(detail)")
 }
 
 guard let assetIdentifier = placeholderIdentifier else {

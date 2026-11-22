@@ -28,6 +28,12 @@ const WORK_DIR = process.env.WORK_DIR || path.join(os.tmpdir(), 'xhs-livephoto')
 const TRIM_SECONDS = Number(process.env.TRIM_SECONDS || 3)
 const CONCURRENCY = Number(process.env.CONCURRENCY || 1)
 const KEEP_FAILED = process.env.KEEP_FAILED === '1'
+// 是否往视频里写 com.apple.quicktime.content.identifier：
+// 静止帧那边写不进去（Apple MakerNote 无法新建），两个文件标识不一致时
+// Photos 可能直接拒绝配对（PHPhotosError 3302），所以默认关闭，交由 Photos 生成。
+const TAG_CONTENT_ID = process.env.TAG_CONTENT_ID === '1'
+// 把静止帧裁剪对齐到视频的宽高（解决 3302 里「宽高比不一致」这一类）
+const MATCH_STILL_TO_VIDEO = process.env.MATCH_STILL_TO_VIDEO === '1'
 const DOWNLOAD_TIMEOUT = Number(process.env.DOWNLOAD_TIMEOUT || 60000)
 const MAX_JOBS_KEPT = Number(process.env.MAX_JOBS_KEPT || 200)
 
@@ -99,13 +105,29 @@ async function download(url, filePath) {
  * 静止帧必须是 JPEG/HEIC：上游现在返回的是不带 imageView2 参数的「原图」，
  * 格式可能是 jpeg / webp / heic，这里统一转成 baseline JPEG。
  * 优先用 ffmpeg；若 ffmpeg 缺少对 HEIC 的支持，macOS 上回退到系统自带 sips。
- * STILL_MAX_EDGE > 0 时按最长边缩放（让静止帧与 1080p 级别的 Live Photo 视频尺寸接近）。
+ *
+ * 可选：
+ *   STILL_MAX_EDGE=N          按最长边缩放
+ *   MATCH_STILL_TO_VIDEO=1    按视频宽高居中裁剪（PHPhotosError 3302 常见对策）
  */
-async function prepareStill(input, output) {
+async function prepareStill(input, output, videoSize) {
   const maxEdge = Number(process.env.STILL_MAX_EDGE || 0)
-  const args = ['-y', '-hide_banner', '-loglevel', 'error', '-i', input, '-frames:v', '1']
+  const filters = []
   if (maxEdge > 0) {
-    args.push('-vf', `scale='min(iw,${maxEdge})':-2`)
+    filters.push(`scale='min(iw,${maxEdge})':-2`)
+  }
+  let crop = false
+  if (MATCH_STILL_TO_VIDEO && videoSize && videoSize.width && videoSize.height) {
+    filters.push(
+      `scale=${videoSize.width}:${videoSize.height}:force_original_aspect_ratio=increase`
+    )
+    filters.push(`crop=${videoSize.width}:${videoSize.height}`)
+    crop = true
+  }
+
+  const args = ['-y', '-hide_banner', '-loglevel', 'error', '-i', input, '-frames:v', '1']
+  if (filters.length > 0) {
+    args.push('-vf', filters.join(','))
   }
   args.push('-q:v', '2', output)
 
@@ -115,6 +137,9 @@ async function prepareStill(input, output) {
   } catch (error) {
     if (process.env.SIPS_FALLBACK === '0' || !fs.existsSync('/usr/bin/sips')) {
       throw error
+    }
+    if (crop) {
+      console.warn('[livephoto] ffmpeg 失败且需要裁剪，sips 无法裁剪，将退回普通转换')
     }
     const sipsArgs = []
     if (maxEdge > 0) {
@@ -127,11 +152,14 @@ async function prepareStill(input, output) {
 
 /**
  * 把任意来源的 Live Photo 视频规范化为 Photos 能接受的配对视频：
- * H.264 + yuv420p + 3 秒、mov 容器、写入 QuickTime ContentIdentifier。
- * -t 3 是 Apple Live Photo 的约定时长，超长会被 Photos 拒绝导入。
+ * H.264 + yuv420p + 3 秒 + mov 容器。
+ * 注意：默认**不写** com.apple.quicktime.content.identifier ——
+ * 静止帧那边无法写入同样的标识（Apple MakerNote 不能新建），
+ * 两者不一致时 Photos 会拒绝配对（PHPhotosError 3302）。
+ * 需要导出「两个散文件」给第三方 App 时，用 TAG_CONTENT_ID=1 打开。
  */
 async function prepareVideo(input, output, contentIdentifier) {
-  await run(FFMPEG, [
+  const args = [
     '-y',
     '-hide_banner',
     '-loglevel',
@@ -161,11 +189,52 @@ async function prepareVideo(input, output, contentIdentifier) {
     '-b:a',
     '128k',
     '-movflags',
-    '+faststart+use_metadata_tags',
-    '-metadata',
-    `com.apple.quicktime.content.identifier=${contentIdentifier}`,
-    output,
-  ])
+    TAG_CONTENT_ID ? '+faststart+use_metadata_tags' : '+faststart',
+  ]
+  if (TAG_CONTENT_ID) {
+    args.push('-metadata', `com.apple.quicktime.content.identifier=${contentIdentifier}`)
+  }
+  args.push(output)
+  await run(FFMPEG, args)
+}
+
+/** 读取图片尺寸（macOS 用 sips，跨平台回退 ffmpeg） */
+async function probeImage(input) {
+  if (fs.existsSync('/usr/bin/sips')) {
+    try {
+      const { stdout } = await run('/usr/bin/sips', ['-g', 'pixelWidth', '-g', 'pixelHeight', input], 20000)
+      const width = /pixelWidth:\s*(\d+)/.exec(stdout)
+      const height = /pixelHeight:\s*(\d+)/.exec(stdout)
+      if (width && height) {
+        return { width: Number(width[1]), height: Number(height[1]) }
+      }
+    } catch (error) {
+      // 交给下面的 ffmpeg 兜底
+    }
+  }
+  return probeVideo(input)
+}
+
+/** 用 ffmpeg -i 的 stderr 解析视频/图片的尺寸、时长、编码 */
+async function probeVideo(input) {
+  let text = ''
+  try {
+    const { stderr } = await run(FFMPEG, ['-hide_banner', '-i', input, '-f', 'null', '-'], 60000)
+    text = stderr
+  } catch (error) {
+    text = error.message || ''
+  }
+  const size = /,\s(\d{2,5})x(\d{2,5})[\s,\[]/.exec(text)
+  const duration = /Duration:\s(\d+):(\d+):(\d+(?:\.\d+)?)/.exec(text)
+  const codec = /Video:\s([a-z0-9]+)/.exec(text)
+  return {
+    width: size ? Number(size[1]) : null,
+    height: size ? Number(size[2]) : null,
+    duration: duration
+      ? Number(duration[1]) * 3600 + Number(duration[2]) * 60 + Number(duration[3])
+      : null,
+    codec: codec ? codec[1] : null,
+  }
 }
 
 async function importLivePhoto({ stillPath, videoPath, album, takenAt }) {
@@ -216,9 +285,19 @@ async function runJob(job) {
     `[job ${job.id}] downloaded image=${image.size}B(${image.contentType}) video=${video.size}B(${video.contentType})`
   )
 
+  job.step = 'probe'
+  const stillMedia = await probeImage(rawImage)
+  const videoMedia = await probeVideo(rawVideo)
+  job.media = { still: stillMedia, video: videoMedia }
+  const fmt = (m) =>
+    `${m.width || '?'}x${m.height || '?'}${m.duration ? ` ${m.duration.toFixed(2)}s` : ''}${
+      m.codec ? ` ${m.codec}` : ''
+    }`
+  console.info(`[job ${job.id}] media still=${fmt(stillMedia)} video=${fmt(videoMedia)}`)
+
   job.step = 'transcode'
   try {
-    await prepareStill(rawImage, stillPath)
+    await prepareStill(rawImage, stillPath, videoMedia)
   } catch (error) {
     throw new Error(
       `静止帧转码失败（下载到 ${image.size} 字节，content-type=${image.contentType}）: ${error.message}`
@@ -231,6 +310,14 @@ async function runJob(job) {
       `视频转码失败（下载到 ${video.size} 字节，content-type=${video.contentType}）: ${error.message}`
     )
   }
+
+  const outStill = await probeImage(stillPath)
+  const outVideo = await probeVideo(videoPath)
+  job.media.output = { still: outStill, video: outVideo }
+  console.info(
+    `[job ${job.id}] output still=${fmt(outStill)} video=${fmt(outVideo)}` +
+      `${MATCH_STILL_TO_VIDEO ? ' (已按视频尺寸对齐静止帧)' : ''}`
+  )
 
   job.step = 'import'
   const result = await importLivePhoto({
@@ -325,6 +412,7 @@ function publicJob(job) {
     imageUrl: job.imageUrl,
     videoUrl: job.videoUrl,
     downloads: job.downloads || null,
+    media: job.media || null,
     result: job.result || null,
     error: job.error || null,
     createdAt: job.createdAt,
@@ -381,6 +469,8 @@ app.get('/health', (req, res) => {
     concurrency: CONCURRENCY,
     trimSeconds: TRIM_SECONDS,
     stillMaxEdge: Number(process.env.STILL_MAX_EDGE || 0),
+    tagContentId: TAG_CONTENT_ID,
+    matchStillToVideo: MATCH_STILL_TO_VIDEO,
     running,
     queued: queue.length,
     jobs: jobs.size,
