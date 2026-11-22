@@ -102,10 +102,11 @@ fi
 mkdir -p "$BUILD_DIR"
 
 # ---------- 目标架构 / 部署版本 ----------
-# 不指定 -target 时，swiftc 会按「当前系统版本」去找标准库；当 Command Line Tools
-# 比 macOS 旧时就会报
-#   error: unable to load standard library for target 'arm64-apple-macosx27.2.0'
-# 所以这里显式指定最小部署版本（与 Info.plist 的 LSMinimumSystemVersion 保持一致）。
+# 常见坑：swiftc 找不到标准库时只会报
+#   error: unable to load standard library for target 'arm64-apple-macosx…'
+# 可能原因有两种，这里都处理：
+#   1) 没有显式 -sdk，驱动自己探测不到 SDK（CLT 目录残缺时很常见）
+#   2) 新 SDK 的 stdlib 模块不再支持过低的部署目标（如 macOS 11）
 HOST_ARCH="$(uname -m)"
 case "$HOST_ARCH" in
   arm64|x86_64) ;;
@@ -114,80 +115,97 @@ esac
 MIN_MACOS="${MACOSX_DEPLOYMENT_TARGET:-11.0}"
 SWIFT_TARGET="${SWIFT_TARGET:-${HOST_ARCH}-apple-macosx${MIN_MACOS}}"
 SDK_VERSION="$(xcrun --sdk macosx --show-sdk-version 2>/dev/null || echo unknown)"
+SDK_PATH="$(xcrun --sdk macosx --show-sdk-path 2>/dev/null || true)"
+SDK_ARGS=()
+[[ -n "$SDK_PATH" ]] && SDK_ARGS=(-sdk "$SDK_PATH")
+
+PROBE_DIR="$(mktemp -d)"
+PROBE_SRC="${PROBE_DIR}/probe.swift"
+printf 'print("ok")\n' > "$PROBE_SRC"
+cleanup_probe() { rm -rf "$PROBE_DIR" 2>/dev/null || true; }
+trap 'cleanup_probe' EXIT
+
+probe_compile() {
+  "$SWIFTC" "${SDK_ARGS[@]}" -target "$1" -typecheck "$PROBE_SRC" 2>&1
+}
+
+# 候选部署目标：用户指定 → 11 → 12 … → 宿主系统主版本
+TARGET_CANDIDATES=("$SWIFT_TARGET")
+for v in 12.0 13.0 14.0 15.0 16.0 26.0; do
+  t="${HOST_ARCH}-apple-macosx${v}"
+  [[ " ${TARGET_CANDIDATES[*]} " == *" ${t} "* ]] || TARGET_CANDIDATES+=("$t")
+done
+HOST_MAJOR="$(sw_vers -productVersion 2>/dev/null | cut -d. -f1 || true)"
+if [[ -n "$HOST_MAJOR" ]]; then
+  t="${HOST_ARCH}-apple-macosx${HOST_MAJOR}.0"
+  [[ " ${TARGET_CANDIDATES[*]} " == *" ${t} "* ]] || TARGET_CANDIDATES+=("$t")
+fi
+# 再补一个「SDK 主版本」候选：某些机器 sw_vers 拿不到版本号，但 SDK 版本是已知的
+if [[ "$SDK_VERSION" =~ ^([0-9]+)\.[0-9]+$ ]]; then
+  t="${HOST_ARCH}-apple-macosx${BASH_REMATCH[1]}.0"
+  [[ " ${TARGET_CANDIDATES[*]} " == *" ${t} "* ]] || TARGET_CANDIDATES+=("$t")
+fi
 
 # ---------- 工具链诊断 ----------
 # 新版工具链布局（Xcode 15+/CLT 新版）：
 #   - 标准库「模块」在 SDK 里：$SDK/usr/lib/swift/Swift.swiftmodule
-#   - 运行时 dylib 在系统：  /usr/lib/swift/libswiftCore.dylib
+#   - 运行时 dylib 交给系统（/usr/lib/swift 或 dyld 共享缓存）
 #   - $DEV/usr/lib/swift/macosx 里只有 libswiftCompatibility*.a 之类的兼容库
-# 所以判断依据是「SDK 模块 + 系统运行时 + 真编译一次」，而不是找 libswiftCore.dylib。
+# 因此判断依据是「SDK 模块 + swiftc 的 -print-target-info + 真编译一次」。
 diagnose() {
-  local dev_dir swiftc_path swift_ver sdk_path sdk_from_info
-  local modules_ok=0 runtime_ok=0 compile_ok=0
+  local dev_dir swift_ver mod_dir count
   dev_dir="$(xcode-select -p 2>/dev/null || true)"
-  swiftc_path="$(xcrun -f swiftc 2>/dev/null || true)"
-  sdk_path="$(xcrun --sdk macosx --show-sdk-path 2>/dev/null || true)"
-  if [[ -n "$swiftc_path" ]]; then
-    swift_ver="$("$swiftc_path" --version 2>&1 | head -1 || true)"
-    sdk_from_info="$("$swiftc_path" -print-target-info 2>/dev/null \
-      | sed -n 's/.*"sdkPath"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1 || true)"
-  else
-    swift_ver="未知"
-    sdk_from_info=""
-  fi
+  swift_ver="$("$SWIFTC" --version 2>&1 | head -1 || true)"
+  count="$(pkgutil --pkgs 2>/dev/null | grep -ci 'commandlinetools' || true)"
 
   log "=== Swift 工具链诊断 ==="
   printf '  macOS         : %s (%s)\n' "$(sw_vers -productVersion 2>/dev/null || echo unknown)" "$HOST_ARCH"
   printf '  xcode-select  : %s\n' "${dev_dir:-未安装 / 未选择}"
+  printf '  CLT 安装记录  : %s 条（0 条说明不是正常安装，或安装记录已损坏）\n' "${count:-0}"
   if [[ -d /Applications/Xcode.app ]]; then
     printf '  Xcode.app     : 已安装（可 sudo xcode-select -s /Applications/Xcode.app）\n'
   else
     printf '  Xcode.app     : 未安装\n'
   fi
-  printf '  swiftc        : %s\n' "${swiftc_path:-找不到}"
+  printf '  swiftc        : %s\n' "${SWIFTC:-找不到}"
   printf '  swiftc 版本   : %s\n' "$swift_ver"
-  printf '  macOS SDK     : %s (version %s)\n' "${sdk_path:-未知}" "$SDK_VERSION"
-  printf '  SDK(工具链)   : %s\n' "${sdk_from_info:-未知}"
-  printf '  编译目标      : %s\n' "$SWIFT_TARGET"
+  printf '  macOS SDK     : %s (version %s)\n' "${SDK_PATH:-未知}" "$SDK_VERSION"
 
-  local mod_dir="${sdk_path}/usr/lib/swift/Swift.swiftmodule"
-  if [[ -n "$sdk_path" && -d "$mod_dir" ]]; then
-    printf '  Swift 模块    : OK   %s（%s 个文件）\n' "$mod_dir" "$(ls -1 "$mod_dir" 2>/dev/null | wc -l | tr -d ' ')"
-    modules_ok=1
+  mod_dir="${SDK_PATH}/usr/lib/swift/Swift.swiftmodule"
+  if [[ -n "$SDK_PATH" && -d "$mod_dir" ]]; then
+    printf '  Swift 模块    : OK   %s\n' "$mod_dir"
+    ls -1 "$mod_dir" 2>/dev/null | head -6 | sed 's/^/                     /'
   else
     printf '  Swift 模块    : 缺失 %s\n' "$mod_dir"
   fi
 
-  if [[ -f /usr/lib/swift/libswiftCore.dylib ]]; then
-    printf '  运行时 stdlib : OK   /usr/lib/swift/libswiftCore.dylib\n'
-    runtime_ok=1
-  else
-    printf '  运行时 stdlib : 缺失 /usr/lib/swift/libswiftCore.dylib\n'
-  fi
-
-  local probe_dir
-  probe_dir="$(mktemp -d)"
-  printf 'print("ok")\n' > "${probe_dir}/probe.swift"
-  if "$SWIFTC" -target "$SWIFT_TARGET" "${probe_dir}/probe.swift" -o "${probe_dir}/probe" \
-    >"${probe_dir}/out" 2>"${probe_dir}/err"; then
-    printf '  编译测试      : OK（hello world 可编译）\n'
-    compile_ok=1
-  else
-    printf '  编译测试      : 失败 → %s\n' "$(head -1 "${probe_dir}/err" | cut -c1-120)"
-  fi
-  rm -rf "$probe_dir"
-
+  printf '  swiftc -print-target-info（前 20 行）:\n'
+  "$SWIFTC" -print-target-info 2>&1 | head -20 | sed 's/^/    /' || true
   echo
-  if (( compile_ok )); then
-    log "结论：工具链可以正常编译，直接 ./build.sh 即可"
-  elif (( modules_ok && runtime_ok )); then
-    warn "结论：SDK 模块和运行时都在，但仍编译失败 → 多半是 SDK 与工具链版本错配"
-    warn "建议：若已装 Xcode → sudo xcode-select -s /Applications/Xcode.app；否则重装 CLT 后重试"
+
+  printf '  编译探测（-sdk 已显式传入）:\n'
+  local t err chosen=""
+  for t in "${TARGET_CANDIDATES[@]}"; do
+    if err="$(probe_compile "$t")"; then
+      printf '    OK   %s\n' "$t"
+      chosen="$t"
+      break
+    fi
+    printf '    失败 %s → %s\n' "$t" "$(printf '%s' "$err" | head -1 | cut -c1-110)"
+  done
+  echo
+
+  if [[ -n "$chosen" ]]; then
+    log "结论：可用。最低部署版本 = ${chosen#*-apple-macosx}（build.sh 会自动选它）"
+    log "      ./build.sh 直接用即可；想固定可用 MACOSX_DEPLOYMENT_TARGET=${chosen#*-apple-macosx} ./build.sh"
   else
-    warn "结论：工具链缺标准库（看上面「缺失」项）→ Command Line Tools 安装不完整"
-    warn "修复 A：sudo rm -rf /Library/Developer/CommandLineTools && xcode-select --install"
-    warn "        等安装窗口提示完成，再 xcrun -f swiftc && swiftc --version 验证，然后 ./build.sh"
-    warn "修复 B：sudo xcode-select -s /Applications/Xcode.app（已装完整 Xcode 时）"
+    warn "结论：所有候选目标都编译不了，属于工具链本身的问题（与项目代码无关）"
+    warn "原因 A：这套 Command Line Tools 不是正常安装（你这台 CLT 安装记录为 0 条）"
+    warn "        修复：sudo rm -rf /Library/Developer/CommandLineTools"
+    warn "              softwareupdate --list | grep -i 'command line'   # 看有没有可装的 CLT"
+    warn "              sudo softwareupdate -i '<上面列出的名字>'         # 或用系统设置 > 通用 > 软件更新"
+    warn "原因 B：装了完整 Xcode 但 xcode-select 指向 CLT"
+    warn "        修复：sudo xcode-select -s /Applications/Xcode.app/Contents/Developer"
   fi
 }
 
@@ -196,19 +214,23 @@ if (( DIAGNOSE )); then
   exit 0
 fi
 
-# ---------- 工具链自检 ----------
-# 用一个最小文件做 -typecheck：几秒内就能暴露「标准库缺失」这类环境问题，
-# 而不是等长编译到一半才失败。
-PROBE_DIR="$(mktemp -d)"
-printf 'let probe = 1\nprint(probe)\n' > "${PROBE_DIR}/probe.swift"
-log "自检 Swift 工具链（-typecheck，目标 ${SWIFT_TARGET}）"
-if ! PROBE_ERR="$("$SWIFTC" -typecheck -target "$SWIFT_TARGET" "${PROBE_DIR}/probe.swift" 2>&1)"; then
-  printf '%s\n' "$PROBE_ERR" | head -20 >&2
-  rm -rf "$PROBE_DIR"
-  die "Swift 工具链不可用（多数是标准库缺失 / Command Line Tools 未装完）。先运行：./build.sh --diagnose"
+# ---------- 工具链自检：自动挑选可用的最低部署版本 ----------
+log "自检 Swift 工具链（-typecheck）"
+CHOSEN_TARGET=""
+LAST_PROBE_ERR=""
+for t in "${TARGET_CANDIDATES[@]}"; do
+  if ERR="$(probe_compile "$t")"; then
+    CHOSEN_TARGET="$t"
+    break
+  fi
+  LAST_PROBE_ERR="$ERR"
+done
+if [[ -z "$CHOSEN_TARGET" ]]; then
+  printf '%s\n' "$LAST_PROBE_ERR" | head -20 >&2
+  die "Swift 工具链无法编译任何目标（与项目代码无关）。先运行：./build.sh --diagnose"
 fi
-rm -rf "$PROBE_DIR"
-log "工具链自检通过"
+SWIFT_TARGET="$CHOSEN_TARGET"
+log "工具链自检通过（目标 ${SWIFT_TARGET}）"
 
 # ---------- 生成带版本的 Info.plist ----------
 PLIST_BUILD="${BUILD_DIR}/Info.plist"
@@ -226,7 +248,7 @@ log "目标：${SWIFT_TARGET}（macOS SDK ${SDK_VERSION}）"
 # Info.plist 必须用 __info_plist 段嵌进二进制，否则 TCC 拿不到
 # NSPhotoLibraryAddUsageDescription，请求照片权限会被直接拒绝。
 log "编译 ${SRC} → ${BIN}"
-"$SWIFTC" -O -swift-version 5 -target "$SWIFT_TARGET" \
+"$SWIFTC" -O -swift-version 5 "${SDK_ARGS[@]}" -target "$SWIFT_TARGET" \
   -o "$BIN" \
   "$SRC" \
   -framework Foundation \

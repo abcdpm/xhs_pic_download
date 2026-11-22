@@ -117,7 +117,7 @@ tail -f /tmp/xhs-livephoto.err.log
 | `/health` 里 `importerExists: false` | 未编译，先跑 `./build.sh` |
 | `照片图库权限未授予 (status=…)` | 系统设置 → 隐私与安全性 → 照片，勾选 `lpimport` / Terminal |
 | `Photos 拒绝了该 Live Photo` | 视频超 3 秒或编码异常；调小 `TRIM_SECONDS`，或用 `KEEP_FAILED=1` 保留产物用 ffprobe 检查 |
-| `unable to load standard library for target 'arm64-apple-macosx…'` | 先跑 **`./build.sh --diagnose`**：它会检查「SDK 里的 Swift.swiftmodule / 系统 `/usr/lib/swift` / hello-world 实编译」三项并给结论。① 编译测试失败且模块缺失 → CLT 装坏了：`sudo rm -rf /Library/Developer/CommandLineTools && xcode-select --install`（等安装窗口真正完成）；② 模块在但仍失败 → SDK 与工具链错配：装了 Xcode 就 `sudo xcode-select -s /Applications/Xcode.app`；③ 想换最低版本可 `MACOSX_DEPLOYMENT_TARGET=12.0 ./build.sh` |
+| `unable to load standard library for target 'arm64-apple-macosx…'` | build.sh 现在会：① 显式传 `-sdk "$(xcrun --sdk macosx --show-sdk-path)"`（工具链探测不到 SDK 时救命）；② 自动逐个探测部署目标（11 → 12 … → 宿主主版本 → SDK 主版本），取第一个能编译的，日志会打印 `工具链自检通过（目标 …）`。仍失败就跑 `./build.sh --diagnose`：它会打印 `swiftc -print-target-info`、SDK 里 `Swift.swiftmodule` 清单，以及每个候选目标的成败。若全部失败说明 CLT 是残缺安装（`pkgutil --pkgs \| grep -ci commandlinetools` 为 0）：`sudo rm -rf /Library/Developer/CommandLineTools` 后用 `softwareupdate --list \| grep -i "command line"` 找到条目安装，或改用完整 Xcode（`sudo xcode-select -s /Applications/Xcode.app`） |
 | 下载 0 字节 / 403 | CDN 防盗链，确认带了 UA/Referer（worker 已内置） |
 | 容器里连不上 worker | 用启动日志打印的局域网 IP（不要用 `127.0.0.1`）；`HOST` 保持 `0.0.0.0`；macOS 防火墙放行 `node` |
 | Mac 上有了但 iPhone 没有 | Mac「照片」需开启 iCloud 照片，且与 iPhone 同 Apple ID |
