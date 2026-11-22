@@ -355,52 +355,56 @@ func rewriteMovie(input: URL, output: URL, identifier: String) throws {
         ])
     }
 
-    var tracks: [AVAssetTrack] = [videoTrack]
-    tracks.append(contentsOf: asset.tracks(withMediaType: .audio))
-
-    // 先把 reader 的轨输出建好并启动读取：格式描述从「首帧样本」里取，
-    // 避免对 formatDescriptions([Any]) 里的 CoreFoundation 类型做 as?（Swift 6 会报错）
-    var trackOutputs: [(AVMediaType, AVAssetReaderTrackOutput)] = []
-    for track in tracks {
-        let trackOutput = AVAssetReaderTrackOutput(track: track, outputSettings: nil)
-        guard reader.canAdd(trackOutput) else { continue }
-        reader.add(trackOutput)
-        trackOutputs.append((track.mediaType, trackOutput))
-    }
-    guard !trackOutputs.isEmpty else {
+    // ---- 视频：解压成 BGRA 再用 H.264 重编码 ----
+    // 不使用 passthrough（本机 macOS 上 passthrough 读不到样本），也不依赖
+    // track.formatDescriptions（[Any] 里的 CF 类型无法安全转型）。
+    let pixelWidth = Int(videoTrack.naturalSize.width.rounded())
+    let pixelHeight = Int(videoTrack.naturalSize.height.rounded())
+    guard pixelWidth > 0, pixelHeight > 0 else {
         throw NSError(domain: "lpimport", code: 22, userInfo: [
-            NSLocalizedDescriptionKey: "没有任何可复制的轨道：\(input.path)"
-        ])
-    }
-    guard reader.startReading() else {
-        throw reader.error ?? NSError(domain: "lpimport", code: 24, userInfo: [
-            NSLocalizedDescriptionKey: "AVAssetReader startReading 失败"
+            NSLocalizedDescriptionKey: "视频尺寸异常：\(videoTrack.naturalSize)"
         ])
     }
 
-    var pairs: [(AVAssetReaderTrackOutput, AVAssetWriterInput)] = []
-    var firstSamples: [(AVAssetWriterInput, CMSampleBuffer)] = []
-    for (mediaType, trackOutput) in trackOutputs {
-        guard let sample = trackOutput.copyNextSampleBuffer(),
-              let format = CMSampleBufferGetFormatDescription(sample) else {
-            logStderr(
-                "[lpimport] warn: 轨 \(mediaType.rawValue) 没有可读样本"
-                    + "（reader.status=\(reader.status.rawValue)"
-                    + ", error=\(reader.error.map { $0.localizedDescription } ?? "nil")）"
-            )
-            continue
+    let videoOutput = AVAssetReaderTrackOutput(track: videoTrack, outputSettings: [
+        kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
+    ])
+    guard reader.canAdd(videoOutput) else {
+        throw NSError(domain: "lpimport", code: 23, userInfo: [
+            NSLocalizedDescriptionKey: "无法添加视频读取输出"
+        ])
+    }
+    reader.add(videoOutput)
+
+    let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: [
+        AVVideoCodecKey: AVVideoCodecType.h264,
+        AVVideoWidthKey: pixelWidth,
+        AVVideoHeightKey: pixelHeight,
+        AVVideoCompressionPropertiesKey: [
+            AVVideoAverageBitRateKey: 8_000_000,
+            AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
+        ],
+    ])
+    videoInput.expectsMediaDataInRealTime = false
+    videoInput.transform = videoTrack.preferredTransform
+    guard writer.canAdd(videoInput) else {
+        throw NSError(domain: "lpimport", code: 24, userInfo: [
+            NSLocalizedDescriptionKey: "无法添加视频写入输入"
+        ])
+    }
+    writer.add(videoInput)
+
+    // ---- 音频（可选）：有音轨就尝试 passthrough，拿不到首帧格式就放弃音频 ----
+    var audioPair: (AVAssetReaderTrackOutput, AVAssetWriterInput)?
+    var audioOutputRef: AVAssetReaderTrackOutput?
+    if let audioTrack = asset.tracks(withMediaType: .audio).first {
+        let audioOutput = AVAssetReaderTrackOutput(track: audioTrack, outputSettings: nil)
+        if reader.canAdd(audioOutput) {
+            reader.add(audioOutput)
+            audioOutputRef = audioOutput
+        } else {
+            logStderr("[lpimport] warn: 无法添加音频读取输出，本次不保留音频")
         }
-        let trackInput = AVAssetWriterInput(mediaType: mediaType, outputSettings: nil, sourceFormatHint: format)
-        trackInput.expectsMediaDataInRealTime = false
-        guard writer.canAdd(trackInput) else { continue }
-        writer.add(trackInput)
-        pairs.append((trackOutput, trackInput))
-        firstSamples.append((trackInput, sample))
-    }
-    guard !pairs.isEmpty else {
-        throw NSError(domain: "lpimport", code: 22, userInfo: [
-            NSLocalizedDescriptionKey: "轨道都无法加入 Writer：\(input.path)"
-        ])
     }
 
     // 1) content.identifier
@@ -423,6 +427,30 @@ func rewriteMovie(input: URL, output: URL, identifier: String) throws {
         }
     }
 
+    // 启动读取：音频需要首帧的格式描述（视频走重编码，不需要）
+    guard reader.startReading() else {
+        throw reader.error ?? NSError(domain: "lpimport", code: 26, userInfo: [
+            NSLocalizedDescriptionKey: "AVAssetReader startReading 失败"
+        ])
+    }
+    var audioFirstSample: CMSampleBuffer?
+    if let audioOutput = audioOutputRef {
+        if let sample = audioOutput.copyNextSampleBuffer(),
+           let format = CMSampleBufferGetFormatDescription(sample) {
+            let audioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: nil, sourceFormatHint: format)
+            audioInput.expectsMediaDataInRealTime = false
+            if writer.canAdd(audioInput) {
+                writer.add(audioInput)
+                audioPair = (audioOutput, audioInput)
+                audioFirstSample = sample
+            } else {
+                logStderr("[lpimport] warn: 无法添加音频写入输入，本次不保留音频")
+            }
+        } else {
+            logStderr("[lpimport] warn: 音频首帧不可读，本次不保留音频")
+        }
+    }
+
     guard writer.startWriting() else {
         throw writer.error ?? NSError(domain: "lpimport", code: 23, userInfo: [
             NSLocalizedDescriptionKey: "AVAssetWriter startWriting 失败"
@@ -430,12 +458,9 @@ func rewriteMovie(input: URL, output: URL, identifier: String) throws {
     }
     writer.startSession(atSourceTime: .zero)
 
-    // 把预读的首帧写回去（格式描述就是从它拿的）
-    for (trackInput, sample) in firstSamples {
-        if !trackInput.append(sample) {
-            throw writer.error ?? NSError(domain: "lpimport", code: 25, userInfo: [
-                NSLocalizedDescriptionKey: "写入首帧失败（track=\(trackInput.mediaType.rawValue)）"
-            ])
+    if let sample = audioFirstSample, let (_, audioInput) = audioPair {
+        if !audioInput.append(sample) {
+            logStderr("[lpimport] warn: 音频首帧写入失败，结果可能没有声音")
         }
     }
 
@@ -455,8 +480,11 @@ func rewriteMovie(input: URL, output: URL, identifier: String) throws {
         metadataAdaptor = nil
     }
 
-    // 逐轨搬运样本（passthrough，非实时，简单轮询）
-    var pending = pairs
+    // 逐轨搬运样本（非实时，简单轮询）
+    var pending: [(AVAssetReaderTrackOutput, AVAssetWriterInput)] = [(videoOutput, videoInput)]
+    if let audioPair = audioPair {
+        pending.append(audioPair)
+    }
     var waitRounds = 0
     while !pending.isEmpty {
         var progressed = false
