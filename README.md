@@ -20,6 +20,15 @@ docker build -t nfew/xhs_pic_download:latest .
 docker run -d -p 7776:7776 --name xhs_pic_download nfew/xhs_pic_download:latest
 ```
 
+也可以用仓库自带的 `build-image.sh`（版本标签 + OCI 标签 + 冒烟测试 + 可选推送）：
+
+```sh
+./build-image.sh              # 版本取自 package.json（当前 1.0.1），构建 :1.0.1 与 :latest
+./build-image.sh --push       # 构建后推送两个标签（需先 docker login）
+./build-image.sh 1.0.2 --push # 指定版本
+IMAGE=yourhub/xhs_pic_download ./build-image.sh   # 换镜像名
+```
+
 #### 1. 部署
 
 请使用 docker 自行部署

@@ -20,6 +20,7 @@ const express = require('express')
 
 const PORT = Number(process.env.PORT || 7777)
 const HOST = process.env.HOST || '0.0.0.0'
+const WORKER_VERSION = require('./package.json').version
 const FFMPEG = process.env.FFMPEG || 'ffmpeg'
 const IMPORTER = process.env.IMPORTER || path.join(__dirname, 'bin', 'lpimport')
 const DEFAULT_ALBUM = process.env.ALBUM || '小红书Live'
@@ -325,6 +326,22 @@ function waitForJob(job, timeoutMs) {
 
 // MARK: - HTTP 接口
 
+let importerVersion = null
+
+/** 读取 lpimport 的版本号（build.sh 注入），失败不影响服务启动 */
+async function detectImporterVersion() {
+  if (!fs.existsSync(IMPORTER)) {
+    return null
+  }
+  try {
+    const { stdout } = await run(IMPORTER, ['--version'], 15000)
+    const firstLine = stdout.split('\n').map((line) => line.trim()).filter(Boolean)[0]
+    return firstLine || null
+  } catch (error) {
+    return null
+  }
+}
+
 const app = express()
 app.use(express.json({ limit: '1mb' }))
 
@@ -337,6 +354,7 @@ app.get('/health', (req, res) => {
     urls: lanUrls(PORT),
     importer: IMPORTER,
     importerExists: fs.existsSync(IMPORTER),
+    importerVersion,
     ffmpeg: FFMPEG,
     album: DEFAULT_ALBUM,
     concurrency: CONCURRENCY,
@@ -438,24 +456,37 @@ document.getElementById('f').addEventListener('submit', async (e) => {
 </body></html>`)
 })
 
-app.listen(PORT, HOST, () => {
-  const urls = lanUrls(PORT)
-  console.info(`[xhs-livephoto] listening on ${HOST}:${PORT}`)
-  console.info(`[xhs-livephoto] importer: ${IMPORTER} (exists=${fs.existsSync(IMPORTER)})`)
-  if (HOST === '0.0.0.0' || HOST === '::') {
-    if (urls.length > 0) {
-      console.info('[xhs-livephoto] 其他设备/容器可用的地址:')
-      urls.forEach((url) => console.info(`    ${url}`))
-      console.info('[xhs-livephoto] 容器里请这样配置（示例）:')
-      console.info(`    -e LIVEPHOTO_WORKER_URL=${urls[0]}`)
+async function start() {
+  importerVersion = await detectImporterVersion()
+
+  app.listen(PORT, HOST, () => {
+    const urls = lanUrls(PORT)
+    console.info(`[xhs-livephoto] v${WORKER_VERSION} listening on ${HOST}:${PORT}`)
+    console.info(
+      `[xhs-livephoto] importer: ${IMPORTER} (exists=${fs.existsSync(IMPORTER)}, version=${importerVersion || 'unknown'})`
+    )
+    if (HOST === '0.0.0.0' || HOST === '::') {
+      if (urls.length > 0) {
+        console.info('[xhs-livephoto] 其他设备/容器可用的地址:')
+        urls.forEach((url) => console.info(`    ${url}`))
+        console.info('[xhs-livephoto] 容器里请这样配置（示例）:')
+        console.info(`    -e LIVEPHOTO_WORKER_URL=${urls[0]}`)
+      } else {
+        console.info(
+          `[xhs-livephoto] 没找到局域网 IPv4 地址；若容器和 worker 在同一台 Mac 上，可用 http://host.docker.internal:${PORT}`
+        )
+      }
     } else {
-      console.info('[xhs-livephoto] 没找到局域网 IPv4 地址；若容器和 worker 在同一台 Mac 上，可用 http://host.docker.internal:' + PORT)
+      console.warn(`[xhs-livephoto] 只监听 ${HOST}，容器可能访问不到；需要跨机器访问请用 HOST=0.0.0.0`)
     }
-  } else {
-    console.warn(`[xhs-livephoto] 只监听 ${HOST}，容器可能访问不到；需要跨机器访问请用 HOST=0.0.0.0`)
-  }
-  if (process.platform !== 'darwin') {
-    console.warn('[xhs-livephoto] 警告：当前不是 macOS，写入照片图库会失败（仅能用于联调转码流程）')
-  }
+    if (process.platform !== 'darwin') {
+      console.warn('[xhs-livephoto] 警告：当前不是 macOS，写入照片图库会失败（仅能用于联调转码流程）')
+    }
+  })
+}
+
+start().catch((error) => {
+  console.error(`[xhs-livephoto] 启动失败: ${error.message}`)
+  process.exit(1)
 })
 

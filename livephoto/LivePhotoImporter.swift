@@ -32,7 +32,28 @@ let usageLines = [
     "  --album, -a  导入后加入（必要时创建）的相簿名",
     "  --date       照片拍摄时间，ISO8601，如 2024-09-04T20:53:34Z",
     "  --quiet, -q  不输出 warning",
+    "  --version, -V 打印版本号",
 ]
+
+// 版本信息来自 build.sh 注入并嵌入 __TEXT,__info_plist 的 Info.plist
+func infoValue(_ key: String) -> String? {
+    guard let value = Bundle.main.object(forInfoDictionaryKey: key) else { return nil }
+    if let text = value as? String { return text }
+    if let number = value as? NSNumber { return number.stringValue }
+    return nil
+}
+
+func toolVersion() -> String {
+    return infoValue("CFBundleShortVersionString") ?? "unknown"
+}
+
+func toolBuild() -> String {
+    return infoValue("CFBundleVersion") ?? "unknown"
+}
+
+func versionLine() -> String {
+    return "lpimport \(toolVersion()) (build \(toolBuild()))"
+}
 
 func logStderr(_ message: String) {
     FileHandle.standardError.write((message + "\n").data(using: .utf8)!)
@@ -86,7 +107,11 @@ func parseOptions(_ argv: [String]) -> Options {
             }
         case "--quiet", "-q":
             options.quiet = true
+        case "--version", "-V":
+            print(versionLine())
+            exit(0)
         case "--help", "-h":
+            print(versionLine())
             print(usageLines.joined(separator: "\n"))
             exit(0)
         default:

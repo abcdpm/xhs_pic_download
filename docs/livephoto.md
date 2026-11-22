@@ -154,6 +154,7 @@ iOS 快捷指令 ──(shareText)──> GET|POST /getXhsPicUrl
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
+| `HOST` | 0.0.0.0 | 监听地址；跨机器/容器访问必须保持 `0.0.0.0` |
 | `PORT` | 7777 | 监听端口（默认仅本机，跨机请加反代/白名单） |
 | `ALBUM` | 小红书Live | 相簿名（不存在会自动创建） |
 | `FFMPEG` | ffmpeg | Apple Silicon 通常是 `/opt/homebrew/bin/ffmpeg` |
@@ -172,6 +173,7 @@ iOS 快捷指令 ──(shareText)──> GET|POST /getXhsPicUrl
 brew install node ffmpeg
 
 # 1) 编译 Swift 导入器（Info.plist 会嵌进二进制，否则 TCC 拿不到用途说明）
+#    版本号取自 livephoto/package.json，脚本会自动注入并做冒烟测试
 cd livephoto && ./build.sh          # 产物 livephoto/bin/lpimport
 
 # 2) 第一次必须在 Terminal 前台跑一次，完成照片权限授权
@@ -285,6 +287,12 @@ docker exec xhs_pic_download node -e "fetch(process.env.LIVEPHOTO_WORKER_URL + '
   - 6 秒源视频 → **3.00s / h264 High / yuv420p / MOV**，`com.apple.quicktime.content.identifier` 写入成功 ✅
   - **webp 3024x4032 → JPEG 3024x4032**；`STILL_MAX_EDGE=1440` → **1440x1920** ✅
   - `album` 透传、404/非法 URL 明确报错、批量接口 2/2 done ✅
+- `livephoto/build.sh`：`--help`、版本号解析（`1.0.1` / semver 校验）、非 macOS 预检、
+  worker 版本上报（启动横幅 + `/health.importerVersion`）已在本环境验证；
+  `swiftc` 编译与 `__info_plist` 注入需在 macOS 上执行。
+- `build-image.sh`：实际构建 `llllalex/xhs_pic_download:1.0.1` + `:latest`，OCI 标签
+  （version / revision / created / source）正确，容器内 `GET /healthz` 返回 `ok`
+  （用 `docker exec` 在容器内自检，不依赖宿主网络）。
 - 仅 `lpimport` 的 Photos 写入需在 macOS 上验证（本环境无 Photos.framework）。
 
 ## 9. 后续可选增强

@@ -46,6 +46,28 @@ curl -s -X POST http://127.0.0.1:7777/livephoto \
   -d '{"imageUrl":"https://example.com/a.jpg","videoUrl":"https://example.com/a.mov","wait":true}'
 ```
 
+`./build.sh` 会做这些事（任何一步失败都会明确报错退出）：
+
+1. 预检：macOS、`xcrun`/`swiftc`、`plutil`、源文件与 `Info.plist`
+2. 解析版本号（默认取 `package.json` 的 `version`）与构建号（默认取 git 提交数）
+3. 复制并注入版本到 `bin/.build/Info.plist`，再以 `__info_plist` 段嵌入二进制
+4. `swiftc` 编译 + ad-hoc 签名
+5. 冒烟测试 `--version` / `--help`（这步能挡住"编译过了但跑不起来"）
+6. 打印架构、大小、sha256，并写入 `bin/VERSION`
+
+> 版本号只在 `livephoto/package.json` 里改（当前 `1.0.1`），脚本自动读取，不用改 build.sh。
+> 需要临时构建别的版本：`./build.sh --version 1.0.2 --build 43`；清空重建：`./build.sh --clean`。
+
+## 版本
+
+| 位置 | 内容 |
+|---|---|
+| `package.json` → `version` | 唯一版本来源（worker 也会上报） |
+| `./bin/lpimport --version` | `lpimport 1.0.1 (build <git 提交数>)` |
+| `./bin/VERSION` | 与上面一致的文本 |
+| `curl -s 127.0.0.1:7777/health \| jq .importerVersion` | `"lpimport 1.0.1 (build 42)"` |
+| 启动日志 | `[xhs-livephoto] v1.0.1 listening on 0.0.0.0:7777` |
+
 成功返回：
 
 ```json

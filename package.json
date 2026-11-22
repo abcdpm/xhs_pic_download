@@ -1,6 +1,6 @@
 {
   "name": "xhs_pic_download",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "结合iOS的“快捷指令”, 一键从小红书下载无水印图片",
   "main": "web.js",
   "dependencies": {

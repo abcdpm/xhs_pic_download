@@ -1,6 +1,6 @@
 {
   "name": "xhs-livephoto-worker",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "把小红书下载的图片 + Live Photo 视频合成为 Live Photo 并写入 macOS 照片图库",
   "main": "worker.js",
