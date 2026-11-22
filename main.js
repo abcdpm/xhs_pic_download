@@ -213,6 +213,33 @@ function extractVideoUrl(note) {
  *   isLivePhoto,
  * }
  */
+/**
+ * 从 imageList[i].stream 里挑一个最合适的实况视频流。
+ * 优先选带音频的变体（audioBitrate > 0）：XHS 下发的 WEB_LIVEPHOTO_19 通常是
+ * 静音版（audioCodec 空、audioBitrate/volume 全 0），但个别笔记/登录态下
+ * 会出现带音轨的变体。没有带音的就退回第一条可用流。
+ */
+function pickLivePhotoStream(imageItem) {
+  const stream = imageItem?.stream || {}
+  const candidates = []
+  for (const codec of ['h264', 'h265', 'av1', 'h266']) {
+    const list = stream[codec]
+    if (!Array.isArray(list)) {
+      continue
+    }
+    for (const entry of list) {
+      if (entry && entry.masterUrl) {
+        candidates.push(entry)
+      }
+    }
+  }
+  if (candidates.length === 0) {
+    return null
+  }
+  const withAudio = candidates.find((entry) => Number(entry.audioBitrate) > 0)
+  return withAudio || candidates[0]
+}
+
 function buildItems(imageList, note) {
   const items = []
   const picUrlArray = []
@@ -220,7 +247,8 @@ function buildItems(imageList, note) {
 
   list.forEach((imageItem) => {
     const picId = extractPicId(imageItem)
-    const livePhotoVideoUrl = imageItem?.stream?.h264?.[0]?.masterUrl || null
+    const liveStream = pickLivePhotoStream(imageItem)
+    const livePhotoVideoUrl = liveStream ? liveStream.masterUrl : null
     if (!picId && !livePhotoVideoUrl) {
       return
     }
@@ -235,6 +263,9 @@ function buildItems(imageList, note) {
       originalUrl: imageUrl,
       livePhotoVideoUrl,
       isLivePhoto: Boolean(livePhotoVideoUrl),
+      // XHS 网页端实况流多为静音版（audioBitrate=0），这里如实反馈
+      livePhotoHasAudio: liveStream ? Number(liveStream.audioBitrate) > 0 : false,
+      livePhotoAudioBitrate: liveStream ? Number(liveStream.audioBitrate) || 0 : 0,
     })
   })
 
@@ -263,3 +294,4 @@ module.exports.buildItems = buildItems
 module.exports.extractPicId = extractPicId
 module.exports.findNote = findNote
 module.exports.findDom = findDom
+module.exports.pickLivePhotoStream = pickLivePhotoStream

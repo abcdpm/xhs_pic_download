@@ -356,7 +356,30 @@ docker exec xhs_pic_download node -e "fetch(process.env.LIVEPHOTO_WORKER_URL + '
 > 关于"没有声音"：小红书很多实况视频本身就是静音的。worker 现在会在日志里标明
 > `video=… h264 +aac` 或 `video=… h264 无音轨`，可据此区分"源无声"与"处理丢音"。
 
-## 10. 后续可选增强
+## 10. 关于「没有声音」
+
+实测（笔记 `6aeb2c4b…`）：`imageList[0].stream` 里只有一条流
+
+```
+streamDesc=WEB_LIVEPHOTO_19  audioCodec=""  audioBitrate=0  audioDuration=0  volume=0
+```
+
+同时 `livePhoto` 只是布尔 `true`、`note` 里没有 `music` 字段。也就是说：
+**XHS 下发给网页端的实况视频就是静音版**，App 里听到的声音走客户端专属通路，
+匿名网页抓取拿不到。
+
+代码侧的处理：
+
+- `main.js` 新增 `pickLivePhotoStream()`：**优先挑选 `audioBitrate > 0` 的流变体**
+  （若某条笔记/登录态返回带音变体，自动使用带音的；否则退回第一条可用流）；
+- `items[]` 如实给出 `livePhotoHasAudio` / `livePhotoAudioBitrate`；
+- worker 日志标 `video=… +aac` 或 `无音轨`；`/livephoto/from-link` 遇到静音流会直接提示；
+- 源视频**确实带音轨**时（视频笔记、或带音变体），`lpimport` 会「解码 LPCM → 重编码 AAC」，声音会保留。
+
+> 想尝试拿到带音版本：可在请求里传登录态 `xhsCookie`（`main.js` 已支持该参数）。
+> 若登录后接口返回 `audioBitrate > 0` 的变体，上述选择逻辑会自动采用。
+
+## 11. 后续可选增强
 
 - 把笔记发布时间作为 `takenAt` 传入，导入时设置 `creationDate`，相册时间线更真实（worker 已支持）。
 - 失败重试队列 + Bark / Server 酱推送。

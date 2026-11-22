@@ -596,13 +596,19 @@ app.post('/livephoto/from-link', async (req, res) => {
       return
     }
 
-    const jobs = targets.map((item) =>
-      enqueue({
+    const jobs = targets.map((item) => {
+      if (item.livePhotoHasAudio === false) {
+        console.info(
+          `[from-link] 提示：该实况流 audioBitrate=${item.livePhotoAudioBitrate || 0}` +
+            '（XHS 网页端下发的是静音版 WEB_LIVEPHOTO，合成结果可能无声）'
+        )
+      }
+      return enqueue({
         imageUrl: item.imageUrl,
         videoUrl: item.livePhotoVideoUrl,
         album: body.album,
       })
-    )
+    })
     if (body.wait === true) {
       const timeout = Number(body.waitTimeoutMs) || 240000
       await Promise.all(jobs.map((job) => waitForJob(job, timeout)))

@@ -78,10 +78,14 @@ node worker.js                # 首次运行请允许「访问您的照片」
   "items": [
     { "index": 0, "type": "image", "imageUrl": "https://ci.xiaohongshu.com/<id>",
       "originalUrl": "https://ci.xiaohongshu.com/<id>",
-      "livePhotoVideoUrl": "https://sns-video-hw.xhscdn.com/xxx.mov", "isLivePhoto": true }
+      "livePhotoVideoUrl": "https://sns-video-hw.xhscdn.com/xxx.mov", "isLivePhoto": true,
+      "livePhotoHasAudio": false, "livePhotoAudioBitrate": 0 }
   ]
 }
 ```
+
+> `livePhotoHasAudio=false` 表示 XHS 下发的实况流是静音版（`WEB_LIVEPHOTO_19`，audio 参数全 0），
+> 此时合成出来的 Live Photo 天然无声；代码会自动优先选用 `audioBitrate > 0` 的流变体（如果有）。
 
 > 上游已改为返回原图（不带 `imageView2` 参数），格式可能是 jpeg/webp/heic；worker 会统一转成 JPEG 后再参与 Live Photo 配对。
 
