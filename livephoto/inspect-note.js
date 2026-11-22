@@ -1,0 +1,107 @@
+#!/usr/bin/env node
+/**
+ * 探查一条小红书笔记的原始字段，用于确认「声音从哪来」。
+ *
+ * 用法（在仓库根目录已 npm install 的前提下）：
+ *   node livephoto/inspect-note.js "https://xhslink.cn/o/xxxx"
+ *   node livephoto/inspect-note.js "复制粘贴整段分享文本"
+ *
+ * 关注输出里的：
+ *   - note keys / music·audio·bgm：笔记是否有独立背景音乐字段
+ *   - image[i].stream.*：实况视频流里有没有音频相关地址
+ */
+const axios = require('axios')
+const cheerio = require('cheerio')
+
+const UA =
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1'
+
+function preview(value, limit = 600) {
+  try {
+    const text = typeof value === 'string' ? value : JSON.stringify(value)
+    return text && text.length > limit ? `${text.slice(0, limit)}…` : text
+  } catch (error) {
+    return String(value)
+  }
+}
+
+async function main() {
+  const share = process.argv.slice(2).join(' ').trim()
+  if (!share) {
+    console.error('用法: node livephoto/inspect-note.js "<小红书分享文本或链接>"')
+    process.exit(2)
+  }
+  const matched = share.match(/https?:\/\/[^\s，]+/)
+  if (!matched) {
+    console.error('没在参数里找到链接')
+    process.exit(2)
+  }
+
+  let url = matched[0]
+  if (/xhslink/i.test(url)) {
+    const redirect = await axios.get(url, {
+      headers: { 'user-agent': UA },
+      maxRedirects: 0,
+      validateStatus: () => true,
+    })
+    if (redirect.headers.location) {
+      url = redirect.headers.location
+    }
+  }
+  console.log('note url:', url)
+
+  const response = await axios.get(url, { headers: { 'user-agent': UA } })
+  const $ = cheerio.load(response.data)
+  let state = null
+  $('script').each((index, script) => {
+    const text = $(script).html() || ''
+    if (text.includes('window.__INITIAL_STATE__')) {
+      const start = text.indexOf('{')
+      const end = text.lastIndexOf('}')
+      if (start !== -1 && end !== -1) {
+        state = JSON.parse(text.slice(start, end + 1))
+      }
+    }
+  })
+  if (!state) {
+    console.error('页面里没解析到 window.__INITIAL_STATE__')
+    process.exit(1)
+  }
+
+  const note =
+    state?.note?.noteDetailMap?.[state?.note?.firstNoteId]?.note || state?.noteData?.data?.noteData
+  if (!note) {
+    console.error('页面结构里没找到 note（可能需要登录或笔记已删除）')
+    process.exit(1)
+  }
+
+  console.log('\n== note 顶层字段 ==')
+  console.log(Object.keys(note).join(', '))
+
+  for (const key of ['music', 'audio', 'bgm', 'sound', 'video']) {
+    if (note[key]) {
+      console.log(`\n== note.${key} ==`)
+      console.log(preview(note[key], 1200))
+    }
+  }
+
+  const images = Array.isArray(note.imageList) ? note.imageList : []
+  images.forEach((item, index) => {
+    console.log(`\n== imageList[${index}] ==`)
+    console.log('keys:', Object.keys(item).join(', '))
+    const streams = item.stream || {}
+    for (const [codec, list] of Object.entries(streams)) {
+      console.log(`stream.${codec}[0]:`, preview(list && list[0], 800))
+    }
+    for (const key of Object.keys(item)) {
+      if (/audio|music|sound/i.test(key)) {
+        console.log(`${key}:`, preview(item[key], 800))
+      }
+    }
+  })
+}
+
+main().catch((error) => {
+  console.error('ERR', error.message)
+  process.exit(1)
+})
