@@ -98,6 +98,20 @@ if (( CLEAN )); then
 fi
 mkdir -p "$BUILD_DIR"
 
+# ---------- 目标架构 / 部署版本 ----------
+# 不指定 -target 时，swiftc 会按「当前系统版本」去找标准库；当 Command Line Tools
+# 比 macOS 旧时就会报
+#   error: unable to load standard library for target 'arm64-apple-macosx27.2.0'
+# 所以这里显式指定最小部署版本（与 Info.plist 的 LSMinimumSystemVersion 保持一致）。
+HOST_ARCH="$(uname -m)"
+case "$HOST_ARCH" in
+  arm64|x86_64) ;;
+  *) die "未知的 CPU 架构：$HOST_ARCH（可用 SWIFT_TARGET 手动指定）" ;;
+esac
+MIN_MACOS="${MACOSX_DEPLOYMENT_TARGET:-11.0}"
+SWIFT_TARGET="${SWIFT_TARGET:-${HOST_ARCH}-apple-macosx${MIN_MACOS}}"
+SDK_VERSION="$(xcrun --sdk macosx --show-sdk-version 2>/dev/null || echo unknown)"
+
 # ---------- 生成带版本的 Info.plist ----------
 PLIST_BUILD="${BUILD_DIR}/Info.plist"
 cp "$PLIST_TEMPLATE" "$PLIST_BUILD"
@@ -108,12 +122,13 @@ BUNDLE_ID="$(plutil -extract CFBundleIdentifier raw "$PLIST_BUILD")"
 
 log "版本 ${VERSION}（build ${BUILD_NUMBER}），bundle id：${BUNDLE_ID}"
 log "编译器：${SWIFTC}"
+log "目标：${SWIFT_TARGET}（macOS SDK ${SDK_VERSION}）"
 
 # ---------- 编译 ----------
 # Info.plist 必须用 __info_plist 段嵌进二进制，否则 TCC 拿不到
 # NSPhotoLibraryAddUsageDescription，请求照片权限会被直接拒绝。
 log "编译 ${SRC} → ${BIN}"
-"$SWIFTC" -O -swift-version 5 \
+"$SWIFTC" -O -swift-version 5 -target "$SWIFT_TARGET" \
   -o "$BIN" \
   "$SRC" \
   -framework Foundation \

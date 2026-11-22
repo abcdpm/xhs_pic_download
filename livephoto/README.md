@@ -117,6 +117,7 @@ tail -f /tmp/xhs-livephoto.err.log
 | `/health` 里 `importerExists: false` | 未编译，先跑 `./build.sh` |
 | `照片图库权限未授予 (status=…)` | 系统设置 → 隐私与安全性 → 照片，勾选 `lpimport` / Terminal |
 | `Photos 拒绝了该 Live Photo` | 视频超 3 秒或编码异常；调小 `TRIM_SECONDS`，或用 `KEEP_FAILED=1` 保留产物用 ffprobe 检查 |
+| `unable to load standard library for target 'arm64-apple-macosx…'` | Command Line Tools 比 macOS 旧（swiftc 默认按当前系统版本找 stdlib）。build.sh 已显式传 `-target <arch>-apple-macosx11.0`；若仍报错，可用 `MACOSX_DEPLOYMENT_TARGET=12.0 ./build.sh` 调整，或重装 CLT：`sudo rm -rf /Library/Developer/CommandLineTools && xcode-select --install` |
 | 下载 0 字节 / 403 | CDN 防盗链，确认带了 UA/Referer（worker 已内置） |
 | 容器里连不上 worker | 用启动日志打印的局域网 IP（不要用 `127.0.0.1`）；`HOST` 保持 `0.0.0.0`；macOS 防火墙放行 `node` |
 | Mac 上有了但 iPhone 没有 | Mac「照片」需开启 iCloud 照片，且与 iPhone 同 Apple ID |
