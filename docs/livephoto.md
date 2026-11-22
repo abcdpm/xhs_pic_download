@@ -379,6 +379,42 @@ streamDesc=WEB_LIVEPHOTO_19  audioCodec=""  audioBitrate=0  audioDuration=0  vol
 > 想尝试拿到带音版本：可在请求里传登录态 `xhsCookie`（`main.js` 已支持该参数）。
 > 若登录后接口返回 `audioBitrate > 0` 的变体，上述选择逻辑会自动采用。
 
+### 10.1 有没有公开接口能拿到音频？调查结论
+
+- 小红书**没有公开/官方的音频接口**。社区逆向项目（`NanmiCoder/MediaCrawler`、`ReaJason/xhs`、`Spider_XHS`
+  等）用的都是同一批私有接口：`https://edith.xiaohongshu.com/api/sns/web/v1/feed`，必须带
+  `x-s` / `x-t` / `x-s-common` 签名（由 cookie 里的 `a1` + `md5(时间戳+"test"+uri+body)`
+  再经自定义 base64 变换得出）。
+- 这些接口返回的内容与我们已经能从 SSR 页面拿到的 `noteData` **是同一份数据**，
+  所以「社区 API 能不能拿到音频」≈「登录态下这份数据里有没有音频字段」。
+- 已知事实：
+  - 实况视频只有一条 `WEB_LIVEPHOTO_19`，`audioCodec=""`、`audioBitrate=0`、`audioDuration=0`、`volume=0`；
+  - `note` 里没有 `music` / `audio` / `bgm` 字段，`livePhoto` 只是布尔 `true`；
+  - 视频笔记（`type=video`）的 `note.video` 一般自带音轨，不受此影响。
+
+### 10.2 自己验证只需浏览器（不用写代码）
+
+1. Chrome 登录小红书，打开笔记页；
+2. F12 → Network → 过滤 `feed`；
+3. 刷新页面，点开 `feed`（或 `note/feed`）请求 → Response；
+4. 搜索 `music`、`audioBitrate`、`originVideoKey`。
+
+- 若出现 `music` 且带 `musicUrl` → 说明登录态才有，可用 `xhsCookie` + 签名接口取；
+- 若仍是 `audioBitrate: 0` 且无 `music` → 网页端确实没有音频，属平台限制。
+
+### 10.3 已内置「混音」能力（拿到 BGM 地址就能用）
+
+`POST /livephoto` 与 `/livephoto/from-link` 都支持可选 `bgmUrl`：
+
+```bash
+curl -s -X POST http://127.0.0.1:7777/livephoto -H 'content-type: application/json' \
+  -d '{"imageUrl":"...","videoUrl":"...","bgmUrl":"http://.../bgm.m4a","wait":true}'
+```
+
+worker 会下载 BGM，用 ffmpeg 作为第二路音频混进实况视频
+（`-i video -i bgm -map 0:v:0 -map 1:a:0 -t 3 -c:a aac`），随后 AVAssetWriter 再把音频
+解码重编码成 AAC 保留下来 —— **只要能给出音频地址，合成结果就带声音**。
+
 ## 11. 后续可选增强
 
 - 把笔记发布时间作为 `takenAt` 传入，导入时设置 `creationDate`，相册时间线更真实（worker 已支持）。

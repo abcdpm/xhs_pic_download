@@ -164,7 +164,7 @@ async function prepareStill(input, output, videoSize) {
  * tag=true 时写入 com.apple.quicktime.content.identifier（必须与静止帧的
  * Apple MakerNote tag 17 一致，Photos 才会把它们配成 Live Photo）。
  */
-async function prepareVideo(input, output, contentIdentifier, tag) {
+async function prepareVideo(input, output, contentIdentifier, tag, bgmPath) {
   const useTag = tag === true
   const videoArgs = IS_HEVC
     ? ['-c:v', VIDEO_CODEC, '-tag:v', 'hvc1', '-pix_fmt', 'yuv420p']
@@ -175,27 +175,26 @@ async function prepareVideo(input, output, contentIdentifier, tag) {
     videoArgs.push('-preset', 'veryfast', '-crf', '20')
   }
 
-  const args = [
-    '-y',
-    '-hide_banner',
-    '-loglevel',
-    'error',
-    '-i',
-    input,
-    '-t',
-    String(TRIM_SECONDS),
-    '-map',
-    '0:v:0',
-    '-map',
-    '0:a:0?',
+  const args = ['-y', '-hide_banner', '-loglevel', 'error', '-i', input]
+  if (bgmPath) {
+    // 额外传入音频（背景音乐）作为第二条输入
+    args.push('-i', bgmPath)
+  }
+  args.push('-t', String(TRIM_SECONDS))
+  if (bgmPath) {
+    args.push('-map', '0:v:0', '-map', '1:a:0')
+  } else {
+    args.push('-map', '0:v:0', '-map', '0:a:0?')
+  }
+  args.push(
     ...videoArgs,
     '-c:a',
     'aac',
     '-b:a',
     '128k',
     '-movflags',
-    useTag ? '+faststart+use_metadata_tags' : '+faststart',
-  ]
+    useTag ? '+faststart+use_metadata_tags' : '+faststart'
+  )
   if (useTag) {
     args.push('-metadata', `com.apple.quicktime.content.identifier=${contentIdentifier}`)
   }
@@ -311,6 +310,17 @@ async function runJob(job) {
   job.step = 'download'
   const image = await download(job.imageUrl, rawImage)
   const video = await download(job.videoUrl, rawVideo)
+  let bgmPath = null
+  if (job.bgmUrl) {
+    bgmPath = path.join(jobDir, 'bgm_source')
+    try {
+      const bgm = await download(job.bgmUrl, bgmPath)
+      console.info(`[job ${job.id}] downloaded bgm=${bgm.size}B(${bgm.contentType})`)
+    } catch (error) {
+      console.log(`[job ${job.id}] 背景音乐下载失败，忽略：${error.message}`)
+      bgmPath = null
+    }
+  }
   job.downloads = {
     image: { bytes: image.size, contentType: image.contentType },
     video: { bytes: video.size, contentType: video.contentType },
@@ -346,7 +356,8 @@ async function runJob(job) {
       rawVideo,
       videoPath,
       job.contentIdentifier,
-      PAIR_IDENTIFIER ? false : TAG_CONTENT_ID
+      PAIR_IDENTIFIER ? false : TAG_CONTENT_ID,
+      bgmPath
     )
   } catch (error) {
     throw new Error(
@@ -450,6 +461,8 @@ function enqueue(payload) {
     takenAt: payload.takenAt || null,
     imageUrl: payload.imageUrl,
     videoUrl: payload.videoUrl,
+    // 可选：背景音乐地址（若上游能拿到 BGM，就混进实况视频）
+    bgmUrl: payload.bgmUrl || null,
   }
   jobs.set(job.id, job)
   queue.push(job.id)
@@ -465,6 +478,7 @@ function publicJob(job) {
     album: job.album,
     imageUrl: job.imageUrl,
     videoUrl: job.videoUrl,
+    bgmUrl: job.bgmUrl || null,
     downloads: job.downloads || null,
     media: job.media || null,
     result: job.result || null,
@@ -543,6 +557,7 @@ app.post('/livephoto', async (req, res) => {
       videoUrl,
       album: body.album,
       takenAt: body.takenAt,
+      bgmUrl: body.bgmUrl,
     })
     if (body.wait === true) {
       await waitForJob(job, Number(body.waitTimeoutMs) || 180000)
@@ -607,6 +622,8 @@ app.post('/livephoto/from-link', async (req, res) => {
         imageUrl: item.imageUrl,
         videoUrl: item.livePhotoVideoUrl,
         album: body.album,
+        // 若上游能拿到笔记背景音乐，就混进实况视频（目前 XHS 网页数据里通常没有）
+        bgmUrl: item.musicUrl || item.bgmUrl || body.bgmUrl,
       })
     })
     if (body.wait === true) {
