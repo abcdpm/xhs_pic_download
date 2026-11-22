@@ -59,6 +59,8 @@ curl -s -X POST http://127.0.0.1:7777/livephoto \
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
+| `HOST` | 0.0.0.0 | 监听地址。要跨机器/容器访问必须保持 `0.0.0.0` |
+| `PORT` | 7777 | 监听端口；启动日志会打印可用的局域网地址 |
 | `ALBUM` | 小红书Live | 目标相簿（不存在会自动创建） |
 | `TRIM_SECONDS` | 3 | Live 视频裁剪时长 |
 | `STILL_MAX_EDGE` | 0 | >0 时按最长边缩放静止帧（如 `1440`，让尺寸贴近 1080p 级视频） |
@@ -94,4 +96,5 @@ tail -f /tmp/xhs-livephoto.err.log
 | `照片图库权限未授予 (status=…)` | 系统设置 → 隐私与安全性 → 照片，勾选 `lpimport` / Terminal |
 | `Photos 拒绝了该 Live Photo` | 视频超 3 秒或编码异常；调小 `TRIM_SECONDS`，或用 `KEEP_FAILED=1` 保留产物用 ffprobe 检查 |
 | 下载 0 字节 / 403 | CDN 防盗链，确认带了 UA/Referer（worker 已内置） |
+| 容器里连不上 worker | 用启动日志打印的局域网 IP（不要用 `127.0.0.1`）；`HOST` 保持 `0.0.0.0`；macOS 防火墙放行 `node` |
 | Mac 上有了但 iPhone 没有 | Mac「照片」需开启 iCloud 照片，且与 iPhone 同 Apple ID |

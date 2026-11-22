@@ -31,7 +31,8 @@ async function forwardToLivePhotoWorker(items) {
       );
       results.push({ ok: true, jobId: response.data.jobId, imageUrl: item.imageUrl });
     } catch (error) {
-      console.log(`forward livephoto failed: ${error.message}`);
+      const target = `${LIVEPHOTO_WORKER_URL.replace(/\/+$/, '')}/livephoto`;
+      console.log(`forward livephoto failed (${target}): ${error.message}`);
       results.push({ ok: false, error: error.message, imageUrl: item.imageUrl });
     }
   }

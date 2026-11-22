@@ -19,6 +19,7 @@ const axios = require('axios')
 const express = require('express')
 
 const PORT = Number(process.env.PORT || 7777)
+const HOST = process.env.HOST || '0.0.0.0'
 const FFMPEG = process.env.FFMPEG || 'ffmpeg'
 const IMPORTER = process.env.IMPORTER || path.join(__dirname, 'bin', 'lpimport')
 const DEFAULT_ALBUM = process.env.ALBUM || '小红书Live'
@@ -56,6 +57,19 @@ function ensureHttpUrl(value, field) {
     throw new Error(`${field} 必须是 http(s) 地址`)
   }
   return value
+}
+
+/** 列出本机的局域网 IPv4 地址，方便把 worker 地址填到容器/快捷指令里 */
+function lanUrls(port) {
+  const urls = []
+  for (const addresses of Object.values(os.networkInterfaces())) {
+    for (const address of addresses || []) {
+      if (address.family === 'IPv4' && !address.internal) {
+        urls.push(`http://${address.address}:${port}`)
+      }
+    }
+  }
+  return urls
 }
 
 async function download(url, filePath) {
@@ -318,6 +332,9 @@ app.get('/health', (req, res) => {
   res.json({
     ok: true,
     platform: process.platform,
+    host: HOST,
+    port: PORT,
+    urls: lanUrls(PORT),
     importer: IMPORTER,
     importerExists: fs.existsSync(IMPORTER),
     ffmpeg: FFMPEG,
@@ -421,9 +438,22 @@ document.getElementById('f').addEventListener('submit', async (e) => {
 </body></html>`)
 })
 
-app.listen(PORT, () => {
-  console.info(`[xhs-livephoto] listening on http://127.0.0.1:${PORT}`)
+app.listen(PORT, HOST, () => {
+  const urls = lanUrls(PORT)
+  console.info(`[xhs-livephoto] listening on ${HOST}:${PORT}`)
   console.info(`[xhs-livephoto] importer: ${IMPORTER} (exists=${fs.existsSync(IMPORTER)})`)
+  if (HOST === '0.0.0.0' || HOST === '::') {
+    if (urls.length > 0) {
+      console.info('[xhs-livephoto] 其他设备/容器可用的地址:')
+      urls.forEach((url) => console.info(`    ${url}`))
+      console.info('[xhs-livephoto] 容器里请这样配置（示例）:')
+      console.info(`    -e LIVEPHOTO_WORKER_URL=${urls[0]}`)
+    } else {
+      console.info('[xhs-livephoto] 没找到局域网 IPv4 地址；若容器和 worker 在同一台 Mac 上，可用 http://host.docker.internal:' + PORT)
+    }
+  } else {
+    console.warn(`[xhs-livephoto] 只监听 ${HOST}，容器可能访问不到；需要跨机器访问请用 HOST=0.0.0.0`)
+  }
   if (process.platform !== 'darwin') {
     console.warn('[xhs-livephoto] 警告：当前不是 macOS，写入照片图库会失败（仅能用于联调转码流程）')
   }

@@ -197,6 +197,56 @@ curl -s http://<主服务>:7776/healthz     # 上游新增的健康检查，返�
 # 合成成功后 Mac「照片」出现新 Live Photo，几秒后 iPhone 同步到位
 ```
 
+### 5.1 容器如何访问 Mac 上的 worker
+
+worker 默认监听 `0.0.0.0:7777`（可用 `HOST` / `PORT` 改），启动时直接打印可用地址，照抄即可：
+
+```
+[xhs-livephoto] listening on 0.0.0.0:7777
+[xhs-livephoto] importer: /Users/paccu/Tools/xhs_pic_download/livephoto/bin/lpimport (exists=true)
+[xhs-livephoto] 其他设备/容器可用的地址:
+    http://192.168.1.23:7777
+[xhs-livephoto] 容器里请这样配置（示例）:
+    -e LIVEPHOTO_WORKER_URL=http://192.168.1.23:7777
+```
+
+主服务用环境变量 `LIVEPHOTO_WORKER_URL` 找 worker，按容器所在位置选：
+
+| 容器位置 | `LIVEPHOTO_WORKER_URL` | 说明 |
+|---|---|---|
+| 与 worker 同一台 Mac（Docker Desktop） | `http://host.docker.internal:7777` | Docker Desktop 自带该域名，零配置 |
+| 局域网内的 NAS / 服务器 | `http://<Mac 局域网 IP>:7777` | 给 Mac 做 DHCP 保留；Linux 上也可 `--add-host=host.docker.internal:host-gateway` 复用同名 |
+| 公网服务器 / 不同网络 | Tailscale 的 `100.x.y.z:7777` 或隧道地址 | `tailscale ip -4`；或 Cloudflare Tunnel / frp |
+
+```bash
+docker run -d -p 7776:7776 --name xhs_pic_download \
+  -e LIVEPHOTO_WORKER_URL=http://192.168.1.23:7777 \
+  nfew/xhs_pic_download:latest
+```
+
+```yaml
+# docker compose / Unraid 模板里的 env 项
+environment:
+  - LIVEPHOTO_WORKER_URL=http://192.168.1.23:7777
+```
+
+> 变量在进程启动时读取，**改完必须重建容器**（`docker rm -f` + 重新 run）。
+
+验证容器到 worker 的连通性（镜像里没装 curl，用 Node 22 自带的 fetch）：
+
+```bash
+docker exec xhs_pic_download node -e "fetch(process.env.LIVEPHOTO_WORKER_URL + '/health').then(r=>r.json()).then(j=>console.log('OK', j.urls, 'importerExists=' + j.importerExists)).catch(e=>console.error('FAIL', e.message))"
+```
+
+常见失败原因：
+
+| 现象 | 处理 |
+|---|---|
+| 启动日志只有 `127.0.0.1`，或 `HOST` 被设成 `127.0.0.1` | 改回 `HOST=0.0.0.0`（默认值，不用设） |
+| 容器 `ECONNREFUSED` / timeout | macOS 防火墙：系统设置 → 网络 → 防火墙，允许 `node` 接受传入连接；或 `sudo /usr/libexec/ApplicationFirewall/socketfilterfw --add "$(which node)"` 后 `--unblockapp "$(which node)"` |
+| 隔一段时间就连不上 | Mac 休眠 / DHCP 换了 IP：关闭自动休眠 + 路由器上做 IP 绑定 |
+| 同一台 Mac 却连不上 `host.docker.internal` | 极老版本 Docker Desktop；升级，或直接用局域网 IP |
+
 ## 6. iOS 快捷指令改造
 
 1. `获取 URL 内容` → `.../getXhsPicUrl?shareText=<剪贴板>`，得到 JSON。
