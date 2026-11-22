@@ -78,13 +78,39 @@ async function main() {
   images.forEach((item, index) => {
     console.log(`\n== imageList[${index}] ==`)
     console.log('keys:', Object.keys(item).join(', '))
+
+    if (item.livePhoto) {
+      console.log('livePhoto:', preview(item.livePhoto, 2000))
+    }
+
     const streams = item.stream || {}
     for (const [codec, list] of Object.entries(streams)) {
-      console.log(`stream.${codec}[0]:`, preview(list && list[0], 800))
+      if (!Array.isArray(list)) {
+        console.log(`stream.${codec}:`, preview(list))
+        continue
+      }
+      list.forEach((entry, i) => {
+        if (!entry) {
+          console.log(`stream.${codec}[${i}]: null`)
+          return
+        }
+        console.log(
+          `stream.${codec}[${i}]: streamDesc=${entry.streamDesc || '-'}` +
+            ` audioCodec=${entry.audioCodec || '-'}` +
+            ` audioBitrate=${entry.audioBitrate}` +
+            ` audioDuration=${entry.audioDuration}` +
+            ` volume=${entry.volume}` +
+            ` size=${entry.size}`
+        )
+        if (entry.masterUrl) {
+          console.log('    masterUrl:', entry.masterUrl)
+        }
+      })
     }
+
     for (const key of Object.keys(item)) {
-      if (/audio|music|sound/i.test(key)) {
-        console.log(`${key}:`, preview(item[key], 800))
+      if (/audio|music|sound|volume/i.test(key)) {
+        console.log(`${key}:`, preview(item[key], 1000))
       }
     }
   })
