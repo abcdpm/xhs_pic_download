@@ -58,8 +58,15 @@ app.all("/getXhsPicUrl", async function (req, res) {
       null
     );
     const shouldImport = req.query.import === '1' || req.body.import === true;
-    if (shouldImport && LIVEPHOTO_WORKER_URL && !result.error) {
-      result.livePhotoJobs = await forwardToLivePhotoWorker(result.items);
+    if (shouldImport && !result.error) {
+      if (!LIVEPHOTO_WORKER_URL) {
+        // 没配 worker 地址时不算错误，但要明确告诉调用方"没有转发"，避免以为已合成
+        console.warn('[livephoto] 请求带 import=1，但未配置 LIVEPHOTO_WORKER_URL，已跳过转发');
+        result.livePhotoJobs = [];
+        result.livePhotoWarning = '未配置 LIVEPHOTO_WORKER_URL，Live Photo 未转发（不影响图片/视频下载）';
+      } else {
+        result.livePhotoJobs = await forwardToLivePhotoWorker(result.items);
+      }
     }
     res.send(JSON.stringify(result));
   } catch (e) {

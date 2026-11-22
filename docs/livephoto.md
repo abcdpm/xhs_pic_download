@@ -138,6 +138,25 @@ iOS 快捷指令 ──(shareText)──> GET|POST /getXhsPicUrl
   "livePhotoJobs": [{ "ok": true, "jobId": "uuid", "imageUrl": "..." }] }
 ```
 
+关于这两个环境变量的默认行为：
+
+| 变量 | 不配置时 | 结论 |
+|---|---|---|
+| `LIVEPHOTO_ALBUM` | 默认就是 `小红书Live`（worker 侧 `ALBUM` 也是同一默认值） | **不配等于配成这个名字**，只有想换相簿名时才需要设 |
+| `LIVEPHOTO_WORKER_URL` | 为空，`?import=1` 不生效 | 服务功能完全正常（图片/视频/items 都在），只是不会转发给 Mac |
+
+不配 `LIVEPHOTO_WORKER_URL` 但请求带了 `import=1` 时**不会报错**，而是明确告诉你没转发：
+
+```json
+{ "picUrlArray": [...], "items": [...],
+  "livePhotoJobs": [],
+  "livePhotoWarning": "未配置 LIVEPHOTO_WORKER_URL，Live Photo 未转发（不影响图片/视频下载）" }
+```
+
+服务端日志同时打印：`[livephoto] 请求带 import=1，但未配置 LIVEPHOTO_WORKER_URL，已跳过转发`。
+配了但连不上时，`livePhotoJobs` 里每项会是 `{ "ok": false, "error": "connect ECONNREFUSED ..." }`。
+如果你走的是「快捷指令直连 worker」（方案 A），这个变量本来就不需要配。
+
 ### 4.2 worker
 
 | 方法 | 路径 | 说明 |
