@@ -14,6 +14,7 @@
 //
 
 import Foundation
+import AVFoundation
 import ImageIO
 import Photos
 
@@ -24,6 +25,7 @@ struct Options {
     var date: Date?
     var identifier: String?
     var maxPixel: Int = 0
+    var compose = true
     var dump = false
     var quiet = false
 }
@@ -38,6 +40,7 @@ let usageLines = [
     "  --identifier 写入静止帧 Apple MakerNote 的 Live Photo 标识（UUID），须与视频的一致",
     "  --max-pixel  静止帧最长边不超过该像素（0 表示不缩放，需配合 --identifier）",
     "  --dump       打印静止帧的元数据（含 MakerApple），用于排查配对失败",
+    "  --no-compose 跳过 AVAssetWriter 重写视频（默认会补 still-image-time 轨）",
     "  --quiet, -q  不输出 warning",
     "  --version, -V 打印版本号",
 ]
@@ -114,6 +117,8 @@ func parseOptions(_ argv: [String]) -> Options {
             }
         case "--identifier":
             options.identifier = nextValue()
+        case "--no-compose":
+            options.compose = false
         case "--dump":
             options.dump = true
         case "--max-pixel":
@@ -298,6 +303,178 @@ func writeTaggedStill(from source: URL, to destination: URL, identifier: String,
     ])
 }
 
+// MARK: - 用 AVAssetWriter 重写视频，补出 Live Photo 需要的 still-image-time 轨
+//
+// iPhone 拍的 Live Photo，MOV 里除 com.apple.quicktime.content.identifier 之外，
+// 还有一条 mdta 定时元数据轨 "com.apple.quicktime.still-image-time"（标记封面时刻）。
+// ffmpeg 只能写 movie-level 的键，写不出这条轨；缺了它 Photos 会报 3302。
+// 这里用 AVAssetWriter 以「原样 passthrough」方式重封装，并补出该轨。
+
+func makeStillImageTimeFormat() -> CMFormatDescription? {
+    let specs: [[String: Any]] = [
+        [
+            kCMMetadataFormatDescriptionMetadataSpecificationKey_Identifier as String:
+                "mdta/com.apple.quicktime.still-image-time",
+            kCMMetadataFormatDescriptionMetadataSpecificationKey_DataType as String:
+                "com.apple.metadata.datatype.int8",
+        ]
+    ]
+    var format: CMFormatDescription?
+    let status = CMMetadataFormatDescriptionCreateWithMetadataSpecifications(
+        allocator: kCFAllocatorDefault,
+        metadataType: kCMMetadataFormatType_Boxed,
+        metadataSpecifications: specs as CFArray,
+        formatDescriptionOut: &format
+    )
+    if status != noErr {
+        logStderr("[lpimport] warn: 创建 still-image-time 格式描述失败 status=\(status)")
+        return nil
+    }
+    return format
+}
+
+func rewriteMovie(input: URL, output: URL, identifier: String) throws {
+    let asset = AVURLAsset(url: input)
+    guard let videoTrack = asset.tracks(withMediaType: .video).first else {
+        throw NSError(domain: "lpimport", code: 20, userInfo: [
+            NSLocalizedDescriptionKey: "视频里没有视频轨：\(input.path)"
+        ])
+    }
+
+    let seconds = CMTimeGetSeconds(asset.duration)
+    let stillTime = (seconds.isFinite && seconds > 0) ? seconds / 2.0 : 1.5
+
+    let reader: AVAssetReader
+    let writer: AVAssetWriter
+    do {
+        reader = try AVAssetReader(asset: asset)
+        writer = try AVAssetWriter(outputURL: output, fileType: .mov)
+    } catch {
+        throw NSError(domain: "lpimport", code: 21, userInfo: [
+            NSLocalizedDescriptionKey: "无法创建 AVAssetReader/Writer：\(error.localizedDescription)"
+        ])
+    }
+
+    var tracks: [AVAssetTrack] = [videoTrack]
+    tracks.append(contentsOf: asset.tracks(withMediaType: .audio))
+
+    var pairs: [(AVAssetReaderTrackOutput, AVAssetWriterInput)] = []
+    for track in tracks {
+        let trackOutput = AVAssetReaderTrackOutput(track: track, outputSettings: nil)
+        guard reader.canAdd(trackOutput) else { continue }
+        reader.add(trackOutput)
+
+        let formatHint = track.formatDescriptions.first as? CMFormatDescription
+        let trackInput = AVAssetWriterInput(mediaType: track.mediaType, outputSettings: nil, sourceFormatHint: formatHint)
+        trackInput.expectsMediaDataInRealTime = false
+        guard writer.canAdd(trackInput) else { continue }
+        writer.add(trackInput)
+        pairs.append((trackOutput, trackInput))
+    }
+    guard !pairs.isEmpty else {
+        throw NSError(domain: "lpimport", code: 22, userInfo: [
+            NSLocalizedDescriptionKey: "没有任何可复制的轨道：\(input.path)"
+        ])
+    }
+
+    // 1) content.identifier
+    let identifierItem = AVMutableMetadataItem()
+    identifierItem.keySpace = AVMetadataKeySpace.quickTimeMetadata
+    identifierItem.key = "com.apple.quicktime.content.identifier" as NSString
+    identifierItem.value = identifier as NSString
+    writer.metadata = [identifierItem]
+
+    // 2) still-image-time 定时元数据轨
+    var metadataAdaptor: AVAssetWriterInputMetadataAdaptor?
+    if let format = makeStillImageTimeFormat() {
+        let metadataInput = AVAssetWriterInput(mediaType: .metadata, outputSettings: nil, sourceFormatHint: format)
+        metadataInput.expectsMediaDataInRealTime = false
+        if writer.canAdd(metadataInput) {
+            writer.add(metadataInput)
+            metadataAdaptor = AVAssetWriterInputMetadataAdaptor(assetWriterInput: metadataInput)
+        } else {
+            logStderr("[lpimport] warn: 无法添加 still-image-time 轨")
+        }
+    }
+
+    guard writer.startWriting() else {
+        throw writer.error ?? NSError(domain: "lpimport", code: 23, userInfo: [
+            NSLocalizedDescriptionKey: "AVAssetWriter startWriting 失败"
+        ])
+    }
+    writer.startSession(atSourceTime: .zero)
+    guard reader.startReading() else {
+        writer.cancelWriting()
+        throw reader.error ?? NSError(domain: "lpimport", code: 24, userInfo: [
+            NSLocalizedDescriptionKey: "AVAssetReader startReading 失败"
+        ])
+    }
+
+    if let adaptor = metadataAdaptor {
+        let item = AVMutableMetadataItem()
+        item.keySpace = AVMetadataKeySpace(rawValue: "mdta")
+        item.key = "com.apple.quicktime.still-image-time" as NSString
+        item.value = 0 as NSNumber
+        item.dataType = "com.apple.metadata.datatype.int8"
+        let range = CMTimeRange(
+            start: CMTime(seconds: stillTime, preferredTimescale: 600),
+            duration: CMTime(value: 1, timescale: 600)
+        )
+        if !adaptor.append(AVTimedMetadataGroup(items: [item], timeRange: range)) {
+            logStderr("[lpimport] warn: 追加 still-image-time 样本失败")
+        }
+        metadataAdaptor = nil
+    }
+
+    // 逐轨搬运样本（passthrough，非实时，简单轮询）
+    var pending = pairs
+    var waitRounds = 0
+    while !pending.isEmpty {
+        var progressed = false
+        var waiting = false
+        var index = pending.count - 1
+        while index >= 0 {
+            let (output, input) = pending[index]
+            if input.isReadyForMoreMediaData {
+                if let sample = output.copyNextSampleBuffer() {
+                    if !input.append(sample) {
+                        throw input.error ?? NSError(domain: "lpimport", code: 25, userInfo: [
+                            NSLocalizedDescriptionKey: "写入样本失败"
+                        ])
+                    }
+                    progressed = true
+                } else {
+                    input.markAsFinished()
+                    pending.remove(at: index)
+                    progressed = true
+                }
+            } else {
+                waiting = true
+            }
+            index -= 1
+        }
+        if !progressed && waiting {
+            usleep(2000)
+            waitRounds += 1
+            if waitRounds > 30000 {
+                throw NSError(domain: "lpimport", code: 26, userInfo: [
+                    NSLocalizedDescriptionKey: "重写视频超时"
+                ])
+            }
+        }
+    }
+
+    let semaphore = DispatchSemaphore(value: 0)
+    writer.finishWriting { semaphore.signal() }
+    semaphore.wait()
+
+    guard writer.status == .completed else {
+        throw writer.error ?? NSError(domain: "lpimport", code: 27, userInfo: [
+            NSLocalizedDescriptionKey: "AVAssetWriter 结束失败 status=\(writer.status.rawValue)"
+        ])
+    }
+}
+
 // MARK: - 主流程
 
 let options = parseOptions(Array(CommandLine.arguments.dropFirst()))
@@ -338,6 +515,22 @@ if options.dump {
     dumpImageProperties("tagged", stillURL)
 }
 
+// 用 AVAssetWriter 重写视频：补出 still-image-time 轨（ffmpeg 做不到）
+var videoURLToUse = videoURL
+var composedMovieURL: URL?
+if let identifier = options.identifier, !identifier.isEmpty, options.compose {
+    let output = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("lpimport-\(identifier).mov")
+    do {
+        try rewriteMovie(input: videoURL, output: output, identifier: identifier)
+    } catch {
+        fail("重写视频（补 still-image-time 轨）失败: \(error.localizedDescription)")
+    }
+    videoURLToUse = output
+    composedMovieURL = output
+    logStderr("[lpimport] 已重写视频（content.identifier + still-image-time 轨）→ \(output.lastPathComponent)")
+}
+
 var placeholderIdentifier: String?
 var importError: Error?
 let importSemaphore = DispatchSemaphore(value: 0)
@@ -350,8 +543,8 @@ PHPhotoLibrary.shared().performChanges({
     request.addResource(with: .photo, fileURL: stillURL, options: photoOptions)
 
     let videoOptions = PHAssetResourceCreationOptions()
-    videoOptions.originalFilename = videoURL.lastPathComponent
-    request.addResource(with: .pairedVideo, fileURL: videoURL, options: videoOptions)
+    videoOptions.originalFilename = videoURLToUse.lastPathComponent
+    request.addResource(with: .pairedVideo, fileURL: videoURLToUse, options: videoOptions)
 
     if let date = options.date {
         request.creationDate = date
@@ -408,6 +601,12 @@ if let taggedStillURL = taggedStillURL {
     try? FileManager.default.removeItem(at: taggedStillURL)
 }
 
+var composedValue: Any = NSNull()
+if let composedMovieURL = composedMovieURL {
+    composedValue = composedMovieURL.path
+    try? FileManager.default.removeItem(at: composedMovieURL)
+}
+
 var identifierValue: Any = NSNull()
 if let identifier = options.identifier, !identifier.isEmpty {
     identifierValue = identifier
@@ -420,6 +619,7 @@ emit([
     "image": imageURL.path,
     "video": videoURL.path,
     "taggedStill": taggedValue,
+    "composedVideo": composedValue,
     "identifier": identifierValue,
 ])
 

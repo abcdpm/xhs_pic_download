@@ -263,6 +263,9 @@ async function importLivePhoto({ stillPath, videoPath, album, takenAt, identifie
   if (process.env.DUMP_META === '1') {
     args.push('--dump')
   }
+  if (process.env.COMPOSE_MOVIE === '0') {
+    args.push('--no-compose')
+  }
   const { stdout, stderr } = await run(IMPORTER, args, 240000)
   if (stderr) {
     stderr
