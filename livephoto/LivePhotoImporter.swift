@@ -364,7 +364,8 @@ func rewriteMovie(input: URL, output: URL, identifier: String) throws {
         guard reader.canAdd(trackOutput) else { continue }
         reader.add(trackOutput)
 
-        let formatHint = track.formatDescriptions.first as? CMFormatDescription
+        // 新版 SDK 里 formatDescriptions 已经是 [CMFormatDescription]，直接取
+        let formatHint: CMFormatDescription? = track.formatDescriptions.first
         let trackInput = AVAssetWriterInput(mediaType: track.mediaType, outputSettings: nil, sourceFormatHint: formatHint)
         trackInput.expectsMediaDataInRealTime = false
         guard writer.canAdd(trackInput) else { continue }
@@ -438,8 +439,8 @@ func rewriteMovie(input: URL, output: URL, identifier: String) throws {
             if input.isReadyForMoreMediaData {
                 if let sample = output.copyNextSampleBuffer() {
                     if !input.append(sample) {
-                        throw input.error ?? NSError(domain: "lpimport", code: 25, userInfo: [
-                            NSLocalizedDescriptionKey: "写入样本失败"
+                        throw writer.error ?? NSError(domain: "lpimport", code: 25, userInfo: [
+                            NSLocalizedDescriptionKey: "写入样本失败（track=\(input.mediaType.rawValue)）"
                         ])
                     }
                     progressed = true
