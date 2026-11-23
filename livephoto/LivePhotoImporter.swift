@@ -31,10 +31,11 @@ struct Options {
 }
 
 let usageLines = [
-    "usage: lpimport --image <still.jpg> --video <live.mov> [options]",
+    "usage: lpimport --image <still.jpg> [--video <live.mov>] [options]",
+    "       只给 --image → 存入照片；只给 --video → 存入视频；两者都给 → 合成 Live Photo",
     "",
-    "  --image, -i  静止帧图片（JPEG/HEIC）",
-    "  --video, -v  配对视频（H.264 .mov/.mp4，建议 3 秒）",
+    "  --image, -i  静止帧/照片（JPEG/HEIC）",
+    "  --video, -v  视频（H.264 .mov/.mp4；Live Photo 建议 3 秒）",
     "  --album, -a  导入后加入（必要时创建）的相簿名",
     "  --date       照片拍摄时间，ISO8601，如 2024-09-04T20:53:34Z",
     "  --identifier 写入静止帧 Apple MakerNote 的 Live Photo 标识（UUID），须与视频的一致",
@@ -394,36 +395,7 @@ func rewriteMovie(input: URL, output: URL, identifier: String) throws {
     }
     writer.add(videoInput)
 
-    // ---- 音频（可选）：解码为 LPCM 再重编码 AAC ----
-    // 同样不用 passthrough（本机 macOS 上 passthrough 读不到样本，音频会被静默丢掉）
-    var audioPair: (AVAssetReaderTrackOutput, AVAssetWriterInput)?
-    let audioTracks = asset.tracks(withMediaType: .audio)
-    if audioTracks.isEmpty {
-        logStderr("[lpimport] 源视频没有音轨（小红书实况视频常常是静音的），合成结果将无声")
-    } else if let audioTrack = audioTracks.first {
-        let audioOutput = AVAssetReaderTrackOutput(track: audioTrack, outputSettings: [
-            AVFormatIDKey: kAudioFormatLinearPCM,
-            AVLinearPCMBitDepthKey: 16,
-            AVLinearPCMIsFloatKey: false,
-            AVLinearPCMIsBigEndianKey: false,
-            AVLinearPCMIsNonInterleaved: false,
-        ])
-        let audioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: [
-            AVFormatIDKey: kAudioFormatMPEG4AAC,
-            AVSampleRateKey: 44100.0,
-            AVNumberOfChannelsKey: 1,
-            AVEncoderBitRateKey: 128_000,
-        ])
-        audioInput.expectsMediaDataInRealTime = false
-        if reader.canAdd(audioOutput) && writer.canAdd(audioInput) {
-            reader.add(audioOutput)
-            writer.add(audioInput)
-            audioPair = (audioOutput, audioInput)
-            logStderr("[lpimport] 音频轨：解码 LPCM → AAC(44.1kHz 单声道 128kbps)")
-        } else {
-            logStderr("[lpimport] warn: 音频轨无法加入读写器，本次不保留音频")
-        }
-    }
+    // ---- 只处理视频轨（本项目不处理音频）----
 
     // 1) content.identifier
     let identifierItem = AVMutableMetadataItem()
@@ -476,9 +448,6 @@ func rewriteMovie(input: URL, output: URL, identifier: String) throws {
 
     // 逐轨搬运样本（非实时，简单轮询）
     var pending: [(AVAssetReaderTrackOutput, AVAssetWriterInput)] = [(videoOutput, videoInput)]
-    if let audioPair = audioPair {
-        pending.append(audioPair)
-    }
     var waitRounds = 0
     while !pending.isEmpty {
         var progressed = false
@@ -539,13 +508,13 @@ func rewriteMovie(input: URL, output: URL, identifier: String) throws {
 
 let options = parseOptions(Array(CommandLine.arguments.dropFirst()))
 
-guard let imagePath = options.image, let videoPath = options.video else {
-    fail("必须同时提供 --image 与 --video", code: 2)
+guard options.image != nil || options.video != nil else {
+    fail("至少需要 --image 或 --video 之一", code: 2)
 }
-
-let imageURL = URL(fileURLWithPath: imagePath)
-let videoURL = URL(fileURLWithPath: videoPath)
-for url in [imageURL, videoURL] where !FileManager.default.fileExists(atPath: url.path) {
+let inputImageURL: URL? = options.image.map { URL(fileURLWithPath: $0) }
+let inputVideoURL: URL? = options.video.map { URL(fileURLWithPath: $0) }
+for url in [inputImageURL, inputVideoURL].compactMap({ $0 })
+where !FileManager.default.fileExists(atPath: url.path) {
     fail("文件不存在: \(url.path)", code: 2)
 }
 
@@ -554,10 +523,10 @@ guard status == .authorized else {
     fail("照片图库权限未授予 (status=\(status.rawValue))，请在 系统设置 > 隐私与安全性 > 照片 中允许 lpimport / Terminal", code: 3)
 }
 
-// 需要与视频里同样的 asset identifier 才能让 Photos 认这对资源
-var stillURL = imageURL
+// Live Photo：静止帧要写入与视频一致的 asset identifier
+var stillURL: URL?
 var taggedStillURL: URL?
-if let identifier = options.identifier, !identifier.isEmpty {
+if let imageURL = inputImageURL, let identifier = options.identifier, !identifier.isEmpty {
     let output = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent("lpimport-\(identifier).jpg")
     do {
@@ -568,28 +537,39 @@ if let identifier = options.identifier, !identifier.isEmpty {
     stillURL = output
     taggedStillURL = output
     logStderr("[lpimport] 已给静止帧写入标识 \(identifier) → \(output.lastPathComponent)")
+} else if let imageURL = inputImageURL {
+    stillURL = imageURL
 }
 
-if options.dump {
+if options.dump, let imageURL = inputImageURL {
     dumpImageProperties("input", imageURL)
-    dumpImageProperties("tagged", stillURL)
+    if let stillURL = stillURL {
+        dumpImageProperties("tagged", stillURL)
+    }
 }
 
-// 用 AVAssetWriter 重写视频：补出 still-image-time 轨（ffmpeg 做不到）
-var videoURLToUse = videoURL
+// Live Photo：视频要重写成带 still-image-time 轨的 MOV
+var videoURLToUse: URL?
 var composedMovieURL: URL?
-if let identifier = options.identifier, !identifier.isEmpty, options.compose {
-    let output = URL(fileURLWithPath: NSTemporaryDirectory())
-        .appendingPathComponent("lpimport-\(identifier).mov")
-    do {
-        try rewriteMovie(input: videoURL, output: output, identifier: identifier)
-    } catch {
-        fail("重写视频（补 still-image-time 轨）失败: \(error.localizedDescription)")
+if let videoURL = inputVideoURL {
+    if let identifier = options.identifier, !identifier.isEmpty, options.compose, stillURL != nil {
+        let output = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("lpimport-\(identifier).mov")
+        do {
+            try rewriteMovie(input: videoURL, output: output, identifier: identifier)
+        } catch {
+            fail("重写视频（补 still-image-time 轨）失败: \(error.localizedDescription)")
+        }
+        videoURLToUse = output
+        composedMovieURL = output
+        logStderr("[lpimport] 已重写视频（content.identifier + still-image-time 轨）→ \(output.lastPathComponent)")
+    } else {
+        videoURLToUse = videoURL
     }
-    videoURLToUse = output
-    composedMovieURL = output
-    logStderr("[lpimport] 已重写视频（content.identifier + still-image-time 轨）→ \(output.lastPathComponent)")
 }
+
+// 有静止帧 + 视频 → Live Photo；只有图片 → 照片；只有视频 → 视频
+let isLivePhoto = stillURL != nil && videoURLToUse != nil
 
 var placeholderIdentifier: String?
 var importError: Error?
@@ -598,13 +578,18 @@ let importSemaphore = DispatchSemaphore(value: 0)
 PHPhotoLibrary.shared().performChanges({
     let request = PHAssetCreationRequest.forAsset()
 
-    let photoOptions = PHAssetResourceCreationOptions()
-    photoOptions.originalFilename = stillURL.lastPathComponent
-    request.addResource(with: .photo, fileURL: stillURL, options: photoOptions)
+    if let stillURL = stillURL {
+        let photoOptions = PHAssetResourceCreationOptions()
+        photoOptions.originalFilename = stillURL.lastPathComponent
+        request.addResource(with: .photo, fileURL: stillURL, options: photoOptions)
+    }
 
-    let videoOptions = PHAssetResourceCreationOptions()
-    videoOptions.originalFilename = videoURLToUse.lastPathComponent
-    request.addResource(with: .pairedVideo, fileURL: videoURLToUse, options: videoOptions)
+    if let videoURLToUse = videoURLToUse {
+        let videoOptions = PHAssetResourceCreationOptions()
+        videoOptions.originalFilename = videoURLToUse.lastPathComponent
+        let resourceType: PHAssetResourceType = isLivePhoto ? .pairedVideo : .video
+        request.addResource(with: resourceType, fileURL: videoURLToUse, options: videoOptions)
+    }
 
     if let date = options.date {
         request.creationDate = date
@@ -614,7 +599,9 @@ PHPhotoLibrary.shared().performChanges({
 }, completionHandler: { success, error in
     if !success || placeholderIdentifier == nil {
         importError = error ?? NSError(domain: "lpimport", code: 1, userInfo: [
-            NSLocalizedDescriptionKey: "Photos 拒绝了该 Live Photo（通常是视频超过 3 秒、编码不受支持或宽高比差异过大）"
+            NSLocalizedDescriptionKey: isLivePhoto
+                ? "Photos 拒绝了该 Live Photo（视频超 3 秒 / 编码不支持 / 宽高比差异过大）"
+                : "Photos 拒绝了该资源（格式或编码不受支持）"
         ])
     }
     importSemaphore.signal()
@@ -636,7 +623,7 @@ if let error = importError {
         ]
         detail += "\n" + hints.joined(separator: "\n")
     }
-    fail("合成 Live Photo 失败: \(detail)")
+    fail("写入照片图库失败: \(detail)")
 }
 
 guard let assetIdentifier = placeholderIdentifier else {
@@ -672,12 +659,23 @@ if let identifier = options.identifier, !identifier.isEmpty {
     identifierValue = identifier
 }
 
+var imageValue: Any = NSNull()
+if let inputImageURL = inputImageURL {
+    imageValue = inputImageURL.path
+}
+
+var videoValue: Any = NSNull()
+if let inputVideoURL = inputVideoURL {
+    videoValue = inputVideoURL.path
+}
+
 emit([
     "ok": true,
+    "kind": isLivePhoto ? "livephoto" : (inputImageURL != nil ? "photo" : "video"),
     "localIdentifier": assetIdentifier,
     "album": albumValue,
-    "image": imageURL.path,
-    "video": videoURL.path,
+    "image": imageValue,
+    "video": videoValue,
     "taggedStill": taggedValue,
     "composedVideo": composedValue,
     "identifier": identifierValue,

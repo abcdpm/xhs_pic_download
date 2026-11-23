@@ -179,4 +179,3 @@ tail -f /tmp/xhs-livephoto.err.log
 | 下载 0 字节 / 403 | CDN 防盗链，确认带了 UA/Referer（worker 已内置） |
 | 容器里连不上 worker | 用启动日志打印的局域网 IP（不要用 `127.0.0.1`）；`HOST` 保持 `0.0.0.0`；macOS 防火墙放行 `node` |
 | Mac 上有了但 iPhone 没有 | Mac「照片」需开启 iCloud 照片，且与 iPhone 同 Apple ID |
-| 相册里有 Live Photo 但**没有声音** | 看日志 `media … video=…` 是否标注 `无音轨`：若是，源视频本身静音（小红书实况视频常见）；若标了 `+aac` 却无声，请贴日志给我 |

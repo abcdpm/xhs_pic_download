@@ -101,52 +101,25 @@ test('buildItems 在没有匹配 streamType 时回退到可用编码', () => {
   assert.deepEqual(picUrlArray, ['https://sns-video-hw.xhscdn.com/h265.mp4'])
 })
 
-test('buildItems 优先选择带音频的实况流变体', () => {
-  const imageList = [
+test('buildItems 优先 h264，缺 h264 时退回其它编码', () => {
+  const h264List = [
     {
       infoList: [{ url: 'https://sns-webpic-qc.xhscdn.com/202409/abc123/1040g2t0aaa!x' }],
       stream: {
-        h264: [
-          { masterUrl: 'https://sns-video-hw.xhscdn.com/silent.mp4', audioBitrate: 0, volume: 0 },
-          {
-            masterUrl: 'https://sns-video-hw.xhscdn.com/with-audio.mp4',
-            audioBitrate: 128000,
-            audioCodec: 'aac',
-          },
-        ],
+        h264: [{ masterUrl: 'https://sns-video-hw.xhscdn.com/h264.mp4' }],
+        h265: [{ masterUrl: 'https://sns-video-hw.xhscdn.com/h265.mp4' }],
       },
     },
-  ]
-
-  const { items } = buildItems(imageList, {})
-
-  assert.equal(items[0].livePhotoVideoUrl, 'https://sns-video-hw.xhscdn.com/with-audio.mp4')
-  assert.equal(items[0].livePhotoHasAudio, true)
-  assert.equal(items[0].livePhotoAudioBitrate, 128000)
-})
-
-test('buildItems 只有静音流时如实标记（XHS WEB_LIVEPHOTO_19）', () => {
-  const imageList = [
     {
       infoList: [{ url: 'https://sns-webpic-qc.xhscdn.com/202409/abc123/1040g2t0bbb!x' }],
-      stream: {
-        h264: [
-          {
-            masterUrl: 'https://sns-video-hw.xhscdn.com/silent.mp4',
-            audioBitrate: 0,
-            volume: 0,
-            streamDesc: 'WEB_LIVEPHOTO_19',
-          },
-        ],
-      },
+      stream: { h265: [{ masterUrl: 'https://sns-video-hw.xhscdn.com/only-h265.mp4' }] },
     },
   ]
 
-  const { items } = buildItems(imageList, {})
+  const { items } = buildItems(h264List, {})
 
-  assert.equal(items[0].livePhotoVideoUrl, 'https://sns-video-hw.xhscdn.com/silent.mp4')
-  assert.equal(items[0].livePhotoHasAudio, false)
-  assert.equal(items[0].livePhotoAudioBitrate, 0)
+  assert.equal(items[0].livePhotoVideoUrl, 'https://sns-video-hw.xhscdn.com/h264.mp4')
+  assert.equal(items[1].livePhotoVideoUrl, 'https://sns-video-hw.xhscdn.com/only-h265.mp4')
 })
 
 test('buildItems 容忍空 imageList / 无 note.video', () => {

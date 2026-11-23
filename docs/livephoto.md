@@ -192,10 +192,12 @@ curl -s http://<主服务>:7776/status | python3 -m json.tool
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/health` | 依赖/队列状态（`importerExists` 必须为 true） |
-| POST | `/livephoto` | `{ imageUrl, videoUrl, album?, takenAt?, wait? }` |
+| POST | `/livephoto` | `{ imageUrl, videoUrl, album?, takenAt?, wait? }`：合成 Live Photo |
+| POST | `/import-photo` | `{ imageUrl, album?, takenAt?, wait? }`：单张图片直接写入照片图库 |
+| POST | `/import-video` | `{ videoUrl, album?, takenAt?, wait? }`：单个视频直接写入照片图库 |
 | POST | `/livephoto/from-link` | `{ shareText, album? }`：直接给分享文本，worker 复用 `main.js` 解析后合成该笔记的所有 Live Photo（需在仓库根目录 `npm install`） |
 | POST | `/livephoto/batch` | `{ items: [{imageUrl, videoUrl}], album? }` |
-| GET | `/jobs` / `/jobs/:id` | `queued/running/done/failed` + `step` |
+| GET | `/jobs` / `/jobs/:id` | `queued/running/done/failed` + `kind` + `step` |
 | GET | `/` | 调试页面，粘贴两个地址手动试合成 |
 
 `wait: true` 时同步等待（默认最多 180s）并返回 `result.localIdentifier`。
@@ -220,6 +222,41 @@ curl -s http://<主服务>:7776/status | python3 -m json.tool
 | `CONCURRENCY` | 1 | 同时合成任务数 |
 | `KEEP_FAILED` | 0 | 置 1 保留失败任务临时目录便于排查 |
 | `WORK_DIR` | `$TMPDIR/xhs-livephoto` | 临时目录 |
+
+### 4.4 全远程模式：`/getXhsPicRemote`
+
+**手机只发一次请求，图片 / Live Photo / 视频全部由 Mac 下载并写入照片图库**，iPhone 端不保存任何媒体。
+
+```
+GET|POST /getXhsPicRemote?shareText=<分享文本>[&album=小红书]
+```
+
+处理规则（按 `items` 逐条分发到 worker）：
+
+| item | worker 接口 | 结果 |
+|---|---|---|
+| `type=image` 且 `isLivePhoto=true` | `POST /livephoto` | 相册里出现 Live Photo |
+| `type=image` | `POST /import-photo` | 相册里出现照片 |
+| `type=video` | `POST /import-video` | 相册里出现视频 |
+
+返回：
+
+```json
+{
+  "ok": true,
+  "itemCount": 3,
+  "items": [ ... ],
+  "remoteJobs": [
+    { "type": "livephoto", "ok": true, "jobId": "…" },
+    { "type": "photo",     "ok": true, "jobId": "…" },
+    { "type": "video",     "ok": true, "jobId": "…" }
+  ],
+  "remoteForward": { "attempted": 3, "ok": 3, "failed": 0, "lastError": null }
+}
+```
+
+未配置 `LIVEPHOTO_WORKER_URL` 时直接返回 `{ "error": "未配置 LIVEPHOTO_WORKER_URL，无法远程处理媒体" }`。
+每条任务的进度可查 `GET <worker>/jobs`。
 
 ## 5. Mac mini 部署
 
@@ -383,71 +420,12 @@ docker exec xhs_pic_download node -e "fetch(process.env.LIVEPHOTO_WORKER_URL + '
 两者 ──PHAssetCreationRequest(.photo + .pairedVideo)──> 真正的 Live Photo
 ```
 
-> 关于"没有声音"：小红书很多实况视频本身就是静音的。worker 现在会在日志里标明
-> `video=… h264 +aac` 或 `video=… h264 无音轨`，可据此区分"源无声"与"处理丢音"。
+## 10. 关于音频
 
-## 10. 关于「没有声音」
-
-实测（笔记 `6aeb2c4b…`）：`imageList[0].stream` 里只有一条流
-
-```
-streamDesc=WEB_LIVEPHOTO_19  audioCodec=""  audioBitrate=0  audioDuration=0  volume=0
-```
-
-同时 `livePhoto` 只是布尔 `true`、`note` 里没有 `music` 字段。也就是说：
-**XHS 下发给网页端的实况视频就是静音版**，App 里听到的声音走客户端专属通路，
-匿名网页抓取拿不到。
-
-代码侧的处理：
-
-- `main.js` 新增 `pickLivePhotoStream()`：**优先挑选 `audioBitrate > 0` 的流变体**
-  （若某条笔记/登录态返回带音变体，自动使用带音的；否则退回第一条可用流）；
-- `items[]` 如实给出 `livePhotoHasAudio` / `livePhotoAudioBitrate`；
-- worker 日志标 `video=… +aac` 或 `无音轨`；`/livephoto/from-link` 遇到静音流会直接提示；
-- 源视频**确实带音轨**时（视频笔记、或带音变体），`lpimport` 会「解码 LPCM → 重编码 AAC」，声音会保留。
-
-> 想尝试拿到带音版本：可在请求里传登录态 `xhsCookie`（`main.js` 已支持该参数）。
-> 若登录后接口返回 `audioBitrate > 0` 的变体，上述选择逻辑会自动采用。
-
-### 10.1 有没有公开接口能拿到音频？调查结论
-
-- 小红书**没有公开/官方的音频接口**。社区逆向项目（`NanmiCoder/MediaCrawler`、`ReaJason/xhs`、`Spider_XHS`
-  等）用的都是同一批私有接口：`https://edith.xiaohongshu.com/api/sns/web/v1/feed`，必须带
-  `x-s` / `x-t` / `x-s-common` 签名（由 cookie 里的 `a1` + `md5(时间戳+"test"+uri+body)`
-  再经自定义 base64 变换得出）。
-- 这些接口返回的内容与我们已经能从 SSR 页面拿到的 `noteData` **是同一份数据**，
-  所以「社区 API 能不能拿到音频」≈「登录态下这份数据里有没有音频字段」。
-- 已知事实：
-  - 实况视频只有一条 `WEB_LIVEPHOTO_19`，`audioCodec=""`、`audioBitrate=0`、`audioDuration=0`、`volume=0`；
-  - `note` 里没有 `music` / `audio` / `bgm` 字段，`livePhoto` 只是布尔 `true`；
-  - 视频笔记（`type=video`）的 `note.video` 一般自带音轨，不受此影响。
-
-### 10.2 自己验证只需浏览器（不用写代码）
-
-1. Chrome 登录小红书，打开笔记页；
-2. F12 → Network → 过滤 `feed`；
-3. 刷新页面，点开 `feed`（或 `note/feed`）请求 → Response；
-4. 搜索 `music`、`audioBitrate`、`originVideoKey`。
-
-- 若出现 `music` 且带 `musicUrl` → 说明登录态才有，可用 `xhsCookie` + 签名接口取；
-- 若仍是 `audioBitrate: 0` 且无 `music` → 网页端确实没有音频，属平台限制。
-
-**如果确实要拿到 App 里的那份音频**，需要抓移动端流量，完整方案（iOS/Android/纯手机三种，
-含证书安装、QUIC 回落、pinning 绕过、以及现成的 mitmproxy 插件）见
-[`docs/capture-audio.md`](capture-audio.md)。抓到音频直链后直接填到下面的 `bgmUrl` 即可。
-
-### 10.3 已内置「混音」能力（拿到 BGM 地址就能用）
-
-`POST /livephoto` 与 `/livephoto/from-link` 都支持可选 `bgmUrl`：
-
-```bash
-curl -s -X POST http://127.0.0.1:7777/livephoto -H 'content-type: application/json' \
-  -d '{"imageUrl":"...","videoUrl":"...","bgmUrl":"http://.../bgm.m4a","wait":true}'
-```
-
-worker 会下载 BGM，用 ffmpeg 作为第二路音频混进实况视频
-（`-i video -i bgm -map 0:v:0 -map 1:a:0 -t 3 -c:a aac`），随后 AVAssetWriter 再把音频
-解码重编码成 AAC 保留下来 —— **只要能给出音频地址，合成结果就带声音**。
+本项目**不处理音频**：小红书网页端下发的实况视频是静音版（`WEB_LIVEPHOTO_19`，
+`audioCodec=""`、`audioBitrate=0`、`volume=0`），因此合成的 Live Photo 天然无声；
+为保持行为简单，worker 与 `lpimport` 都不做音频处理（视频转码时用 `-an` 丢弃音轨，
+AVAssetWriter 只写视频轨 + still-image-time 轨）。
 
 ## 11. 后续可选增强
 

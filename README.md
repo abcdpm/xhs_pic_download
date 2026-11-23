@@ -78,19 +78,33 @@ node worker.js                # 首次运行请允许「访问您的照片」
   "items": [
     { "index": 0, "type": "image", "imageUrl": "https://ci.xiaohongshu.com/<id>",
       "originalUrl": "https://ci.xiaohongshu.com/<id>",
-      "livePhotoVideoUrl": "https://sns-video-hw.xhscdn.com/xxx.mov", "isLivePhoto": true,
-      "livePhotoHasAudio": false, "livePhotoAudioBitrate": 0 }
+      "livePhotoVideoUrl": "https://sns-video-hw.xhscdn.com/xxx.mov", "isLivePhoto": true }
   ]
 }
 ```
 
-> `livePhotoHasAudio=false` 表示 XHS 下发的实况流是静音版（`WEB_LIVEPHOTO_19`，audio 参数全 0），
-> 此时合成出来的 Live Photo 天然无声；代码会自动优先选用 `audioBitrate > 0` 的流变体（如果有）。
+> 实况视频为静音版（XHS `WEB_LIVEPHOTO_19`，audio 参数全 0），本项目不做音频处理。
 
 > 上游已改为返回原图（不带 `imageView2` 参数），格式可能是 jpeg/webp/heic；worker 会统一转成 JPEG 后再参与 Live Photo 配对。
 
 只要容器配了 `LIVEPHOTO_WORKER_URL=http://<Mac IP>:7777`，解析到 Live Photo 就会**自动**投递给 Mac 合成，**不需要任何额外参数**；
 想单次关闭用 `?import=0`，想改成"必须显式请求才转发"用 `LIVEPHOTO_AUTO_IMPORT=0`。
+
+### 全远程模式：`/getXhsPicRemote`
+
+```sh
+curl "http://<主服务>:7776/getXhsPicRemote?shareText=<分享文本>"
+```
+
+图片、Live Photo、视频**全部由 Mac 下载并写入照片图库**，iPhone 只发这一个请求、不保存任何媒体：
+
+| item | 处理 |
+|---|---|
+| `isLivePhoto=true` | 合成为 Live Photo 进相册 |
+| `type=image` | 直接存入照片 |
+| `type=video` | 直接存入视频 |
+
+返回 `{ ok, itemCount, items, remoteJobs, remoteForward }`；每条任务的进度可在 Mac 上查 `GET <worker>/jobs`。
 
 ## 测试
 

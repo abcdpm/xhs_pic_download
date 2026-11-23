@@ -14,9 +14,14 @@ const LIVEPHOTO_WORKER_URL = process.env.LIVEPHOTO_WORKER_URL || '';
 const LIVEPHOTO_ALBUM = process.env.LIVEPHOTO_ALBUM || '小红书';
 const LIVEPHOTO_TIMEOUT = Number(process.env.LIVEPHOTO_TIMEOUT || 10000);
 const LIVEPHOTO_AUTO_IMPORT = process.env.LIVEPHOTO_AUTO_IMPORT !== '0';
-const WORKER_ENDPOINT = LIVEPHOTO_WORKER_URL
-  ? `${LIVEPHOTO_WORKER_URL.replace(/\/+$/, '')}/livephoto`
-  : null;
+const WORKER_BASE = LIVEPHOTO_WORKER_URL ? LIVEPHOTO_WORKER_URL.replace(/\/+$/, '') : null;
+const WORKER_ENDPOINT = WORKER_BASE ? `${WORKER_BASE}/livephoto` : null;
+
+/** 向 worker 发一个 POST；返回响应 JSON */
+async function postWorker(pathname, payload, timeoutMs = LIVEPHOTO_TIMEOUT) {
+  const response = await axios.post(`${WORKER_BASE}${pathname}`, payload, { timeout: timeoutMs });
+  return response.data;
+}
 
 /** 读取调用方的 import 开关：true=强制转发，false=本次不转发，null=未表态 */
 function readImportFlag(req) {
@@ -44,6 +49,7 @@ function pickLiveItems(result) {
 
 // 最近一次转发的结果，暴露在 /status 上，便于判断"没触发 / 触发但失败"
 let lastForward = null;
+let lastRemote = null;
 
 function rememberForward(result) {
   lastForward = Object.assign({ at: new Date().toISOString() }, result);
@@ -60,16 +66,12 @@ async function forwardToLivePhotoWorker(items) {
   const results = [];
   for (const item of targets) {
     try {
-      const response = await axios.post(
-        WORKER_ENDPOINT,
-        {
-          imageUrl: item.imageUrl,
-          videoUrl: item.livePhotoVideoUrl,
-          album: LIVEPHOTO_ALBUM,
-        },
-        { timeout: LIVEPHOTO_TIMEOUT }
-      );
-      results.push({ ok: true, jobId: response.data.jobId, imageUrl: item.imageUrl });
+      const data = await postWorker('/livephoto', {
+        imageUrl: item.imageUrl,
+        videoUrl: item.livePhotoVideoUrl,
+        album: LIVEPHOTO_ALBUM,
+      });
+      results.push({ ok: true, jobId: data.jobId, imageUrl: item.imageUrl });
     } catch (error) {
       console.log(`forward livephoto failed (${WORKER_ENDPOINT}): ${error.message}`);
       results.push({ ok: false, error: error.message, imageUrl: item.imageUrl });
@@ -133,6 +135,90 @@ app.all("/getXhsPicUrl", async function (req, res) {
   }
 });
 
+/** 把一条笔记的所有媒体交给 worker：图片→照片图库、Live Photo→合成、视频→视频 */
+async function dispatchMediaToWorker(items, album) {
+  const results = [];
+  for (const item of items || []) {
+    if (item.type === 'image' && item.isLivePhoto && item.imageUrl && item.livePhotoVideoUrl) {
+      try {
+        const data = await postWorker('/livephoto', {
+          imageUrl: item.imageUrl,
+          videoUrl: item.livePhotoVideoUrl,
+          album,
+        });
+        results.push({ type: 'livephoto', ok: true, jobId: data.jobId, imageUrl: item.imageUrl });
+      } catch (error) {
+        results.push({ type: 'livephoto', ok: false, error: error.message, imageUrl: item.imageUrl });
+      }
+      continue;
+    }
+    if (item.type === 'image' && item.imageUrl) {
+      try {
+        const data = await postWorker('/import-photo', { imageUrl: item.imageUrl, album });
+        results.push({ type: 'photo', ok: true, jobId: data.jobId, imageUrl: item.imageUrl });
+      } catch (error) {
+        results.push({ type: 'photo', ok: false, error: error.message, imageUrl: item.imageUrl });
+      }
+      continue;
+    }
+    if (item.type === 'video' && item.videoUrl) {
+      try {
+        const data = await postWorker('/import-video', { videoUrl: item.videoUrl, album });
+        results.push({ type: 'video', ok: true, jobId: data.jobId, videoUrl: item.videoUrl });
+      } catch (error) {
+        results.push({ type: 'video', ok: false, error: error.message, videoUrl: item.videoUrl });
+      }
+      continue;
+    }
+    results.push({ type: item.type || 'unknown', ok: false, error: '没有可用的媒体地址' });
+  }
+  return results;
+}
+
+// 全远程模式：图片 / Live Photo / 视频都由 Mac 下载并写入照片图库，手机只发请求
+app.all("/getXhsPicRemote", async function (req, res) {
+  res.set("Content-Type", "application/json");
+  const shareText = req.query.shareText || (req.body && req.body.shareText);
+  const xhsCookie = req.body ? req.body.xhsCookie : undefined;
+  if (!shareText) {
+    res.send(JSON.stringify({ error: "缺少shareText参数" }));
+    return;
+  }
+  if (!WORKER_BASE) {
+    res.send(JSON.stringify({ error: "未配置 LIVEPHOTO_WORKER_URL，无法远程处理媒体" }));
+    return;
+  }
+  try {
+    const result = await doGetUrl({ shareText: shareText, xhsCookie: xhsCookie }, null);
+    if (result.error) {
+      res.send(JSON.stringify(result));
+      return;
+    }
+    const album = req.query.album || (req.body && req.body.album) || LIVEPHOTO_ALBUM;
+    const remoteJobs = await dispatchMediaToWorker(result.items, album);
+    const okCount = remoteJobs.filter((job) => job.ok).length;
+    lastRemote = {
+      at: new Date().toISOString(),
+      target: WORKER_BASE,
+      attempted: remoteJobs.length,
+      ok: okCount,
+      failed: remoteJobs.length - okCount,
+      lastError: (remoteJobs.find((job) => !job.ok) || {}).error || null,
+    };
+    res.send(
+      JSON.stringify({
+        ok: remoteJobs.length > 0 && okCount === remoteJobs.length,
+        itemCount: (result.items || []).length,
+        items: result.items,
+        remoteJobs: remoteJobs,
+        remoteForward: lastRemote,
+      })
+    );
+  } catch (e) {
+    res.send(JSON.stringify({ error: e.message }));
+  }
+});
+
 app.get("/healthz", (req, res) => res.send("ok"));
 
 // 自检端点：确认转发配置是否生效、最近一次转发的结果
@@ -148,6 +234,11 @@ app.get("/status", (req, res) => {
       autoImport: LIVEPHOTO_AUTO_IMPORT,
     },
     lastForward,
+    lastRemote,
+    endpoints: {
+      urls: "/getXhsPicUrl（只返回地址；Live Photo 自动转发合成）",
+      remote: "/getXhsPicRemote（图片/Live Photo/视频全部由 Mac 下载并写入照片图库）",
+    },
     hint:
       LIVEPHOTO_WORKER_URL
         ? '解析到 Live Photo 会自动转发；可用 ?import=0 单次关闭'

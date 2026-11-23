@@ -164,7 +164,7 @@ async function prepareStill(input, output, videoSize) {
  * tag=true 时写入 com.apple.quicktime.content.identifier（必须与静止帧的
  * Apple MakerNote tag 17 一致，Photos 才会把它们配成 Live Photo）。
  */
-async function prepareVideo(input, output, contentIdentifier, tag, bgmPath) {
+async function prepareVideo(input, output, contentIdentifier, tag) {
   const useTag = tag === true
   const videoArgs = IS_HEVC
     ? ['-c:v', VIDEO_CODEC, '-tag:v', 'hvc1', '-pix_fmt', 'yuv420p']
@@ -175,26 +175,22 @@ async function prepareVideo(input, output, contentIdentifier, tag, bgmPath) {
     videoArgs.push('-preset', 'veryfast', '-crf', '20')
   }
 
-  const args = ['-y', '-hide_banner', '-loglevel', 'error', '-i', input]
-  if (bgmPath) {
-    // 额外传入音频（背景音乐）作为第二条输入
-    args.push('-i', bgmPath)
-  }
-  args.push('-t', String(TRIM_SECONDS))
-  if (bgmPath) {
-    args.push('-map', '0:v:0', '-map', '1:a:0')
-  } else {
-    args.push('-map', '0:v:0', '-map', '0:a:0?')
-  }
-  args.push(
+  const args = [
+    '-y',
+    '-hide_banner',
+    '-loglevel',
+    'error',
+    '-i',
+    input,
+    '-t',
+    String(TRIM_SECONDS),
+    '-map',
+    '0:v:0',
     ...videoArgs,
-    '-c:a',
-    'aac',
-    '-b:a',
-    '128k',
+    '-an',
     '-movflags',
-    useTag ? '+faststart+use_metadata_tags' : '+faststart'
-  )
+    useTag ? '+faststart+use_metadata_tags' : '+faststart',
+  ]
   if (useTag) {
     args.push('-metadata', `com.apple.quicktime.content.identifier=${contentIdentifier}`)
   }
@@ -224,7 +220,7 @@ async function probeImage(input) {
   return probeVideo(input)
 }
 
-/** 用 ffmpeg -i 的 stderr 解析视频/图片的尺寸、时长、编码、是否带音轨 */
+/** 用 ffmpeg -i 的 stderr 解析视频/图片的尺寸、时长、编码 */
 async function probeVideo(input) {
   let text = ''
   try {
@@ -236,7 +232,6 @@ async function probeVideo(input) {
   const size = /,\s(\d{2,5})x(\d{2,5})[\s,\[]/.exec(text)
   const duration = /Duration:\s(\d+):(\d+):(\d+(?:\.\d+)?)/.exec(text)
   const codec = /Video:\s([a-z0-9]+)/.exec(text)
-  const audioCodec = /Audio:\s([a-z0-9]+)/.exec(text)
   return {
     width: size ? Number(size[1]) : null,
     height: size ? Number(size[2]) : null,
@@ -244,13 +239,42 @@ async function probeVideo(input) {
       ? Number(duration[1]) * 3600 + Number(duration[2]) * 60 + Number(duration[3])
       : null,
     codec: codec ? codec[1] : null,
-    hasAudio: Boolean(audioCodec),
-    audioCodec: audioCodec ? audioCodec[1] : null,
   }
 }
 
-async function importLivePhoto({ stillPath, videoPath, album, takenAt, identifier, maxPixel }) {
-  const args = ['--image', stillPath, '--video', videoPath]
+/** 按 content-type 给下载文件补上扩展名（Photos 识别资源类型需要） */
+const EXT_BY_CONTENT_TYPE = {
+  'image/heic': 'heic',
+  'image/heif': 'heic',
+  'image/jpeg': 'jpg',
+  'image/jpg': 'jpg',
+  'image/png': 'png',
+  'image/webp': 'webp',
+  'image/gif': 'gif',
+  'video/mp4': 'mp4',
+  'video/quicktime': 'mov',
+  'video/x-m4v': 'm4v',
+}
+
+async function withExtension(filePath, contentType, fallbackExtension) {
+  const key = String(contentType || '')
+    .split(';')[0]
+    .trim()
+    .toLowerCase()
+  const extension = EXT_BY_CONTENT_TYPE[key] || fallbackExtension
+  const target = `${filePath}.${extension}`
+  await fsp.rename(filePath, target)
+  return target
+}
+
+async function runImporter({ imagePath, videoPath, album, takenAt, identifier, maxPixel }) {
+  const args = []
+  if (imagePath) {
+    args.push('--image', imagePath)
+  }
+  if (videoPath) {
+    args.push('--video', videoPath)
+  }
   if (album) {
     args.push('--album', album)
   }
@@ -298,107 +322,123 @@ const jobs = new Map()
 const queue = []
 let running = 0
 
+/**
+ * 下载后按 job.kind 处理：
+ *   livephoto（默认）：静止帧 + 视频 → 合成 Live Photo
+ *   photo：单张图片 → 写入照片图库
+ *   video：单个视频 → 写入照片图库
+ */
 async function runJob(job) {
   const jobDir = path.join(WORK_DIR, job.id)
   await fsp.mkdir(jobDir, { recursive: true })
-  const rawImage = path.join(jobDir, 'source_image')
-  const rawVideo = path.join(jobDir, 'source_video')
-  const stillPath = path.join(jobDir, `${job.id}.jpg`)
-  const videoPath = path.join(jobDir, `${job.id}.mov`)
   job.dir = jobDir
-
-  job.step = 'download'
-  const image = await download(job.imageUrl, rawImage)
-  const video = await download(job.videoUrl, rawVideo)
-  let bgmPath = null
-  if (job.bgmUrl) {
-    bgmPath = path.join(jobDir, 'bgm_source')
-    try {
-      const bgm = await download(job.bgmUrl, bgmPath)
-      console.info(`[job ${job.id}] downloaded bgm=${bgm.size}B(${bgm.contentType})`)
-    } catch (error) {
-      console.log(`[job ${job.id}] 背景音乐下载失败，忽略：${error.message}`)
-      bgmPath = null
-    }
-  }
-  job.downloads = {
-    image: { bytes: image.size, contentType: image.contentType },
-    video: { bytes: video.size, contentType: video.contentType },
-  }
-  console.info(
-    `[job ${job.id}] downloaded image=${image.size}B(${image.contentType}) video=${video.size}B(${video.contentType})`
-  )
-
-  job.step = 'probe'
-  const stillMedia = await probeImage(rawImage)
-  const videoMedia = await probeVideo(rawVideo)
-  job.media = { still: stillMedia, video: videoMedia }
+  const stillPath = path.join(jobDir, `${job.id}.jpg`)
+  const composedPath = path.join(jobDir, `${job.id}.mov`)
   const fmt = (m) =>
     `${m.width || '?'}x${m.height || '?'}${m.duration ? ` ${m.duration.toFixed(2)}s` : ''}${
       m.codec ? ` ${m.codec}` : ''
-    }${m.hasAudio === undefined ? '' : m.hasAudio ? ` +${m.audioCodec || 'audio'}` : ' 无音轨'}`
-  console.info(`[job ${job.id}] media still=${fmt(stillMedia)} video=${fmt(videoMedia)}`)
+    }`
+
+  // ---- 下载 ----
+  job.step = 'download'
+  job.downloads = {}
+  let imagePath = null
+  let videoPath = null
+  if (job.imageUrl) {
+    const raw = path.join(jobDir, 'source_image')
+    const image = await download(job.imageUrl, raw)
+    imagePath = await withExtension(raw, image.contentType, 'jpg')
+    job.downloads.image = { bytes: image.size, contentType: image.contentType }
+    console.info(`[job ${job.id}] downloaded image=${image.size}B(${image.contentType})`)
+  }
+  if (job.videoUrl) {
+    const raw = path.join(jobDir, 'source_video')
+    const video = await download(job.videoUrl, raw)
+    videoPath = await withExtension(raw, video.contentType, 'mp4')
+    job.downloads.video = { bytes: video.size, contentType: video.contentType }
+    console.info(`[job ${job.id}] downloaded video=${video.size}B(${video.contentType})`)
+  }
+
+  // ---- 单张图片 ----
+  if (job.kind === 'photo') {
+    job.step = 'import'
+    const result = await runImporter({ imagePath, album: job.album, takenAt: job.takenAt })
+    return finishJob(job, jobDir, {
+      localIdentifier: result.localIdentifier,
+      album: result.album,
+      imageBytes: job.downloads.image ? job.downloads.image.bytes : null,
+    })
+  }
+
+  // ---- 单个视频 ----
+  if (job.kind === 'video') {
+    job.step = 'import'
+    const result = await runImporter({ videoPath, album: job.album, takenAt: job.takenAt })
+    return finishJob(job, jobDir, {
+      localIdentifier: result.localIdentifier,
+      album: result.album,
+      videoBytes: job.downloads.video ? job.downloads.video.bytes : null,
+    })
+  }
+
+  // ---- Live Photo ----
+  job.step = 'probe'
+  const videoMedia = await probeVideo(videoPath)
+  job.media = { video: videoMedia }
+  console.info(`[job ${job.id}] media video=${fmt(videoMedia)}`)
 
   job.step = 'transcode'
   if (!PAIR_IDENTIFIER) {
     try {
-      await prepareStill(rawImage, stillPath, videoMedia)
+      const stillMedia = await probeImage(imagePath)
+      job.media.still = stillMedia
+      console.info(`[job ${job.id}] media still=${fmt(stillMedia)}`)
+      await prepareStill(imagePath, stillPath, videoMedia)
     } catch (error) {
       throw new Error(
-        `静止帧转码失败（下载到 ${image.size} 字节，content-type=${image.contentType}）: ${error.message}`
+        `静止帧转码失败（content-type=${job.downloads.image ? job.downloads.image.contentType : '?'}）: ${error.message}`
       )
     }
   }
   try {
-    // 配对模式下不需要 ffmpeg 写标识（下一步 AVAssetWriter 会写），
-    // 也避免 use_metadata_tags 生成的 meta/keys 影响 AVAssetReader 读取
+    // 配对模式下 ffmpeg 不写标识（由 AVAssetWriter 写），只做纯视频转码
     await prepareVideo(
-      rawVideo,
       videoPath,
+      composedPath,
       job.contentIdentifier,
-      PAIR_IDENTIFIER ? false : TAG_CONTENT_ID,
-      bgmPath
+      PAIR_IDENTIFIER ? false : TAG_CONTENT_ID
     )
   } catch (error) {
-    throw new Error(
-      `视频转码失败（下载到 ${video.size} 字节，content-type=${video.contentType}）: ${error.message}`
-    )
+    throw new Error(`视频转码失败: ${error.message}`)
   }
 
-  const outVideo = await probeVideo(videoPath)
+  const outVideo = await probeVideo(composedPath)
   job.media.output = { video: outVideo }
-  if (PAIR_IDENTIFIER) {
-    console.info(
-      `[job ${job.id}] output video=${fmt(outVideo)} identifier=${job.contentIdentifier}` +
-        '（静止帧由 lpimport 用 ImageIO 写入同一标识）'
-    )
-  } else {
-    const outStill = await probeImage(stillPath)
-    job.media.output.still = outStill
-    console.info(
-      `[job ${job.id}] output still=${fmt(outStill)} video=${fmt(outVideo)}` +
-        `${MATCH_STILL_TO_VIDEO ? ' (已按视频尺寸对齐静止帧)' : ''}`
-    )
-  }
+  console.info(
+    `[job ${job.id}] output video=${fmt(outVideo)} identifier=${job.contentIdentifier}` +
+      (PAIR_IDENTIFIER ? '（静止帧由 lpimport 用 ImageIO 写入同一标识）' : '')
+  )
 
   job.step = 'import'
-  const result = await importLivePhoto({
-    stillPath: PAIR_IDENTIFIER ? rawImage : stillPath,
-    videoPath,
+  const result = await runImporter({
+    imagePath: PAIR_IDENTIFIER ? imagePath : stillPath,
+    videoPath: composedPath,
     album: job.album,
     takenAt: job.takenAt,
     identifier: PAIR_IDENTIFIER ? job.contentIdentifier : null,
     maxPixel: Number(process.env.STILL_MAX_EDGE || 0),
   })
 
-  job.step = 'done'
-  job.result = {
+  return finishJob(job, jobDir, {
     localIdentifier: result.localIdentifier,
     album: result.album,
-    imageBytes: image.size,
-    videoBytes: video.size,
     identifier: result.identifier || null,
-  }
+  })
+}
+
+async function finishJob(job, jobDir, result) {
+  job.step = 'done'
+  job.result = result
   if (!KEEP_FAILED) {
     await fsp.rm(jobDir, { recursive: true, force: true })
   }
@@ -415,7 +455,7 @@ function pump() {
     running += 1
     job.status = 'running'
     job.startedAt = new Date().toISOString()
-    console.info(`[job ${job.id}] start ${job.imageUrl}`)
+    console.info(`[job ${job.id}] start kind=${job.kind} ${job.imageUrl || job.videoUrl || ''}`)
     runJob(job)
       .then(() => {
         job.status = 'done'
@@ -459,10 +499,9 @@ function enqueue(payload) {
     contentIdentifier: crypto.randomUUID().toUpperCase(),
     album: payload.album || DEFAULT_ALBUM,
     takenAt: payload.takenAt || null,
-    imageUrl: payload.imageUrl,
-    videoUrl: payload.videoUrl,
-    // 可选：背景音乐地址（若上游能拿到 BGM，就混进实况视频）
-    bgmUrl: payload.bgmUrl || null,
+    kind: payload.kind || 'livephoto',
+    imageUrl: payload.imageUrl || null,
+    videoUrl: payload.videoUrl || null,
   }
   jobs.set(job.id, job)
   queue.push(job.id)
@@ -475,10 +514,10 @@ function publicJob(job) {
     jobId: job.id,
     status: job.status,
     step: job.step || null,
+    kind: job.kind,
     album: job.album,
     imageUrl: job.imageUrl,
     videoUrl: job.videoUrl,
-    bgmUrl: job.bgmUrl || null,
     downloads: job.downloads || null,
     media: job.media || null,
     result: job.result || null,
@@ -553,11 +592,55 @@ app.post('/livephoto', async (req, res) => {
     const imageUrl = ensureHttpUrl(body.imageUrl, 'imageUrl')
     const videoUrl = ensureHttpUrl(body.videoUrl, 'videoUrl')
     const job = enqueue({
+      kind: 'livephoto',
       imageUrl,
       videoUrl,
       album: body.album,
       takenAt: body.takenAt,
-      bgmUrl: body.bgmUrl,
+    })
+    if (body.wait === true) {
+      await waitForJob(job, Number(body.waitTimeoutMs) || 180000)
+      res.json(publicJob(job))
+      return
+    }
+    res.json(publicJob(job))
+  } catch (error) {
+    res.status(400).json({ ok: false, error: error.message })
+  }
+})
+
+// 单张图片：由 Mac 下载后直接写入照片图库（手机不再保存任何媒体）
+app.post('/import-photo', async (req, res) => {
+  try {
+    const body = req.body || {}
+    const imageUrl = ensureHttpUrl(body.imageUrl, 'imageUrl')
+    const job = enqueue({
+      kind: 'photo',
+      imageUrl,
+      album: body.album,
+      takenAt: body.takenAt,
+    })
+    if (body.wait === true) {
+      await waitForJob(job, Number(body.waitTimeoutMs) || 180000)
+      res.json(publicJob(job))
+      return
+    }
+    res.json(publicJob(job))
+  } catch (error) {
+    res.status(400).json({ ok: false, error: error.message })
+  }
+})
+
+// 单个视频：由 Mac 下载后直接写入照片图库
+app.post('/import-video', async (req, res) => {
+  try {
+    const body = req.body || {}
+    const videoUrl = ensureHttpUrl(body.videoUrl, 'videoUrl')
+    const job = enqueue({
+      kind: 'video',
+      videoUrl,
+      album: body.album,
+      takenAt: body.takenAt,
     })
     if (body.wait === true) {
       await waitForJob(job, Number(body.waitTimeoutMs) || 180000)
@@ -611,21 +694,14 @@ app.post('/livephoto/from-link', async (req, res) => {
       return
     }
 
-    const jobs = targets.map((item) => {
-      if (item.livePhotoHasAudio === false) {
-        console.info(
-          `[from-link] 提示：该实况流 audioBitrate=${item.livePhotoAudioBitrate || 0}` +
-            '（XHS 网页端下发的是静音版 WEB_LIVEPHOTO，合成结果可能无声）'
-        )
-      }
-      return enqueue({
+    const jobs = targets.map((item) =>
+      enqueue({
+        kind: 'livephoto',
         imageUrl: item.imageUrl,
         videoUrl: item.livePhotoVideoUrl,
         album: body.album,
-        // 若上游能拿到笔记背景音乐，就混进实况视频（目前 XHS 网页数据里通常没有）
-        bgmUrl: item.musicUrl || item.bgmUrl || body.bgmUrl,
       })
-    })
+    )
     if (body.wait === true) {
       const timeout = Number(body.waitTimeoutMs) || 240000
       await Promise.all(jobs.map((job) => waitForJob(job, timeout)))
