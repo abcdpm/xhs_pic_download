@@ -14,6 +14,8 @@ const LIVEPHOTO_WORKER_URL = process.env.LIVEPHOTO_WORKER_URL || '';
 const LIVEPHOTO_ALBUM = process.env.LIVEPHOTO_ALBUM || '小红书';
 const LIVEPHOTO_TIMEOUT = Number(process.env.LIVEPHOTO_TIMEOUT || 10000);
 const LIVEPHOTO_AUTO_IMPORT = process.env.LIVEPHOTO_AUTO_IMPORT !== '0';
+// 带 Live Photo 的笔记里，XHS 有时会额外塞一张「笔记封面图」进 imageList —— 默认跳过它
+const SKIP_REDUNDANT_COVER = process.env.LIVEPHOTO_SKIP_NOTE_COVER !== '0';
 const WORKER_BASE = LIVEPHOTO_WORKER_URL ? LIVEPHOTO_WORKER_URL.replace(/\/+$/, '') : null;
 const WORKER_ENDPOINT = WORKER_BASE ? `${WORKER_BASE}/livephoto` : null;
 
@@ -155,6 +157,11 @@ async function dispatchMediaToWorker(items, album) {
     if (item.type === 'image' && item.isVideoCover) {
       // 视频笔记的封面：不单独存成照片，由 /import-video 写进视频里
       results.push({ type: 'cover', ok: true, skipped: true, imageUrl: item.imageUrl });
+      continue;
+    }
+    if (item.type === 'image' && item.isRedundantCover && SKIP_REDUNDANT_COVER) {
+      // 带 Live Photo 的笔记里混进来的“笔记封面图”，不再单独入库
+      results.push({ type: 'note-cover', ok: true, skipped: true, imageUrl: item.imageUrl });
       continue;
     }
     if (item.type === 'image' && item.imageUrl) {

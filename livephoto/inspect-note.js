@@ -120,9 +120,45 @@ async function main() {
   }
 
   const images = Array.isArray(note.imageList) ? note.imageList : []
+  console.log('\n== note.type ==', note.type, '| imageList.length =', images.length)
+  console.log('== note.cover ==', preview(note.cover, 800))
+  if (note.video?.image) {
+    console.log('== note.video.image ==', preview(note.video.image, 400))
+  }
+  // 诊断「多出一张笔记封面图」：按 fileId/traceId 找重复项、以及与 note.cover 相同的项
+  const coverKeys = new Set()
+  const pushKey = (value) => {
+    if (value) coverKeys.add(String(value))
+  }
+  if (typeof note.cover === 'string') pushKey(note.cover)
+  else if (note.cover && typeof note.cover === 'object') {
+    pushKey(note.cover.fileId)
+    pushKey(note.cover.traceId)
+    pushKey(note.cover.url)
+  }
+  pushKey(note.video?.image?.thumbnailFileid)
+  const duplicates = []
+  const covers = []
+  const seen = new Set()
+  images.forEach((item, index) => {
+    const keys = [item?.fileId, item?.traceId, item?.url].filter(Boolean).map(String)
+    if (keys.some((key) => coverKeys.has(key))) covers.push(index)
+    const id = keys[0]
+    if (id) {
+      if (seen.has(id)) duplicates.push(index)
+      else seen.add(id)
+    }
+  })
+  console.log('== 与 note.cover 相同的 imageList 下标 ==', covers.length ? covers.join(',') : '(无)')
+  console.log('== 重复出现的 imageList 下标 ==', duplicates.length ? duplicates.join(',') : '(无)')
+
   images.forEach((item, index) => {
     console.log(`\n== imageList[${index}] ==`)
     console.log('keys:', Object.keys(item).join(', '))
+    console.log(
+      `  fileId=${item.fileId || '-'} traceId=${item.traceId || '-'}` +
+        ` livePhoto=${item.livePhoto ? 'yes' : 'no'} url=${preview(item.url, 160)}`
+    )
 
     if (item.livePhoto) {
       console.log('livePhoto:', preview(item.livePhoto, 2000))

@@ -171,6 +171,7 @@ curl -s http://<主服务>:7776/status | python3 -m json.tool
 | `LIVEPHOTO_ALBUM` | 默认就是 `小红书`（worker 侧 `ALBUM` 也是同一默认值） | **不配等于配成这个名字**，只有想换相簿名时才需要设 |
 | `LIVEPHOTO_WORKER_URL` | 为空 → 不自动合成 | 服务功能完全正常（图片/视频/items 都在），只是不会转发给 Mac；配置后**自动生效** |
 | `LIVEPHOTO_AUTO_IMPORT` | 默认开启 | 置 `0` 时变成"只有显式 `?import=1` 才转发" |
+| `LIVEPHOTO_SKIP_NOTE_COVER` | 默认开启 | 带 Live Photo 的笔记里混进来的「笔记封面图」默认跳过；置 `0` 恢复"封面也存成一张照片" |
 
 > 相簿默认名已从 `小红书Live` 改为 `小红书`。之前用旧名字导入的照片不会被删除或迁移，
 > 新导入的 Live Photo 会落到「小红书」相簿；若想继续沿用旧相簿，把 worker 的 `ALBUM` 和
@@ -449,6 +450,18 @@ docker exec xhs_pic_download node -e "fetch(process.env.LIVEPHOTO_WORKER_URL + '
   **只要笔记里存在 Live Photo，就不产出 `note.video`**；`originVideoKey` 命中
   `slides_simulate_post/` 的也一律跳过。封面标记只在"确实会产出视频"时生效，
   避免封面被跳过导致丢图。
+- **多实况笔记不再多出一张封面图**：XHS 有时会在 `imageList` 里额外塞一张
+  「笔记封面」（`livePhoto=false`，与 `note.cover` / `note.video.image.thumbnailFileid`
+  相同）。解析时：
+  - 按 `fileId` / `traceId` / picId 对 `imageList` **去重**，同一张图只保留第一次出现；
+  - 与 `note.cover` 相同的条目标记 `isNoteCover`；**当笔记里存在 Live Photo 且该条目
+    不是 Live Photo** 时再标记 `isRedundantCover`（冗余封面），
+    `/getXhsPicRemote` 里直接 `skipped: true`，也不进 `picUrlArray`；
+  - 纯图文笔记（无 Live Photo）的封面照旧当普通图片下载，不会误删；
+  - 想恢复旧行为设 `LIVEPHOTO_SKIP_NOTE_COVER=0`。
+  - 排查手段：`node livephoto/inspect-note.js "<链接>"` 会打印
+    `note.cover`、每个 `imageList[i]` 的 `fileId/traceId/livePhoto`，以及
+    「与 note.cover 相同的下标」「重复出现的下标」。
 
 > 注意：`first-frame` 会重编码视频轨（CRF 18，肉眼接近无损），音频直接 copy，时长不变。
 

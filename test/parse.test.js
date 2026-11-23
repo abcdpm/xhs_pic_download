@@ -259,6 +259,82 @@ test('buildItems：只有 slides 自动合成视频且无 Live Photo 时，封�
   assert.equal(items[0].isLivePhoto, false)
 })
 
+test('buildItems：imageList 里重复出现的同一张图只保留一次', () => {
+  const note = {
+    type: 'normal',
+    imageList: [
+      makeImageItem('1040g2t0dup', 'https://sns-video-hw.xhscdn.com/live1.mov'),
+      makeImageItem('1040g2t0live2', 'https://sns-video-hw.xhscdn.com/live2.mov'),
+      // XHS 偶尔把同一张图再塞一遍（livePhoto=false），以前会在相册里多出一张
+      makeImageItem('1040g2t0dup', 'https://sns-video-hw.xhscdn.com/live1.mov'),
+    ],
+  }
+
+  const { items, picUrlArray } = buildItems(note.imageList, note)
+
+  assert.equal(items.length, 2)
+  assert.deepEqual(
+    items.map((item) => item.imageUrl),
+    ['https://ci.xiaohongshu.com/1040g2t0dup', 'https://ci.xiaohongshu.com/1040g2t0live2']
+  )
+  // 2 个条目 × (图片 URL + 实况视频 URL)
+  assert.equal(picUrlArray.length, 4)
+})
+
+test('buildItems：Live Photo 笔记里混进来的笔记封面图标记 isRedundantCover', () => {
+  const coverItem = makeImageItem('1040g2t0thecover')
+  coverItem.fileId = 'cover-file-1'
+  const note = {
+    type: 'video',
+    cover: {
+      fileId: 'cover-file-1',
+      url: 'https://sns-webpic-qc.xhscdn.com/202409/abc123/1040g2t0thecover!nd_dft_wlteh_webp_3',
+    },
+    imageList: [
+      coverItem,
+      makeImageItem('1040g2t0live1', 'https://sns-video-hw.xhscdn.com/live1.mov'),
+      makeImageItem('1040g2t0live2', 'https://sns-video-hw.xhscdn.com/live2.mov'),
+    ],
+    video: {
+      consumer: { originVideoKey: 'slides_simulate_post/xxx' },
+      media: {
+        video: { streamTypes: [259] },
+        stream: { h264: [{ streamType: 259, masterUrl: 'https://sns-video-hw.xhscdn.com/slides.mp4' }] },
+      },
+    },
+  }
+
+  const { items, picUrlArray } = buildItems(note.imageList, note)
+
+  assert.equal(items.length, 3)
+  assert.equal(items[0].isNoteCover, true)
+  assert.equal(items[0].isRedundantCover, true)
+  assert.equal(items[1].isRedundantCover, false)
+  assert.equal(items[2].isRedundantCover, false)
+  // 冗余封面既不进 items 的图库流程，也不出现在 picUrlArray 里
+  assert.equal(
+    picUrlArray.some((url) => url.includes('1040g2t0thecover')),
+    false
+  )
+  assert.equal(picUrlArray.length, 4)
+})
+
+test('buildItems：没有 Live Photo 时，笔记封面照常作为照片', () => {
+  const coverItem = makeImageItem('1040g2t0cover')
+  coverItem.fileId = 'cover-file-2'
+  const note = {
+    type: 'normal',
+    cover: { fileId: 'cover-file-2' },
+    imageList: [coverItem, makeImageItem('1040g2t0second')],
+  }
+
+  const { items } = buildItems(note.imageList, note)
+
+  assert.equal(items.length, 2)
+  assert.equal(items[0].isNoteCover, true)
+  assert.equal(items[0].isRedundantCover, false)
+})
+
 test('buildItems 容忍空 imageList / 无 note.video', () => {
   assert.deepEqual(buildItems([], {}), { picUrlArray: [], items: [] })
   assert.deepEqual(buildItems(undefined, undefined), { picUrlArray: [], items: [] })

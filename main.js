@@ -257,6 +257,29 @@ function pickLivePhotoStream(imageItem) {
   return null
 }
 
+/** 收集「笔记封面」的各种标识，用于识别 imageList 里混进来的封面条目 */
+function coverIdentityKeys(note) {
+  const keys = new Set()
+  const add = (value) => {
+    if (value) {
+      keys.add(String(value))
+    }
+  }
+  const cover = note?.cover
+  if (typeof cover === 'string') {
+    add(cover)
+  } else if (cover && typeof cover === 'object') {
+    add(cover.fileId)
+    add(cover.traceId)
+    add(cover.url)
+  }
+  const thumbnail = note?.video?.image?.thumbnailFileid
+  if (thumbnail) {
+    add(thumbnail)
+  }
+  return keys
+}
+
 function buildItems(imageList, note) {
   const items = []
   const picUrlArray = []
@@ -276,6 +299,8 @@ function buildItems(imageList, note) {
   const video = shouldIncludeVideo ? pickVideo(note) : null
   // 只有「确实要产出视频」时，imageList[0] 才作为封面（否则封面会被跳过导致丢图）
   const isCoverNote = isVideoNote && Boolean(video)
+  const coverKeys = coverIdentityKeys(note)
+  const seenIdentities = new Set()
 
   list.forEach((imageItem, position) => {
     const picId = extractPicId(imageItem)
@@ -284,8 +309,29 @@ function buildItems(imageList, note) {
     if (!picId && !livePhotoVideoUrl) {
       return
     }
+
+    const identity = String(
+      imageItem?.fileId || imageItem?.traceId || picId || imageItem?.url || ''
+    )
+    // 同一张图在 imageList 里重复出现（封面 + 实况帧）时只保留第一次
+    if (identity && seenIdentities.has(identity)) {
+      return
+    }
+    if (identity) {
+      seenIdentities.add(identity)
+    }
+
+    const isNoteCover =
+      Boolean(identity) &&
+      (coverKeys.has(identity) ||
+        [imageItem?.fileId, imageItem?.traceId, imageItem?.url].some(
+          (value) => value && coverKeys.has(String(value))
+        ))
+    // 有 Live Photo 时，混进来的非实况封面图属于冗余，不再单独入库
+    const isRedundantCover = hasLivePhoto && isNoteCover && !livePhotoVideoUrl
+
     const imageUrl = picId ? `${CDN_IMAGE_HOST}/${picId}` : null
-    if (imageUrl) {
+    if (imageUrl && !isRedundantCover) {
       picUrlArray.push(imageUrl)
     }
     items.push({
@@ -297,6 +343,8 @@ function buildItems(imageList, note) {
       isLivePhoto: Boolean(livePhotoVideoUrl),
       // 视频笔记的 imageList[0] 就是视频封面：不再单独存成照片，改为写进视频
       isVideoCover: isCoverNote && position === 0,
+      isNoteCover,
+      isRedundantCover,
     })
   })
 
