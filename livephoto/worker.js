@@ -477,25 +477,41 @@ async function runJob(job) {
   // ---- 单个视频 ----
   if (job.kind === 'video') {
     let videoForImport = videoPath
-    const coverMode = process.env.EMBED_COVER || 'first-frame'
-    if (job.coverUrl && coverMode !== 'skip') {
-      try {
-        const rawCover = path.join(jobDir, 'source_cover')
-        const cover = await download(job.coverUrl, rawCover)
-        const coverPath = await withExtension(rawCover, cover.contentType, 'jpg')
-        const media = await probeVideo(videoPath)
-        const extension = path.extname(videoPath) || '.mp4'
-        const posterPath = path.join(jobDir, `${job.id}.poster${extension}`)
-        if (coverMode === 'attached-pic') {
-          await embedCoverAttachedPic(videoPath, coverPath, posterPath)
-        } else {
-          await embedCoverFirstFrame(videoPath, coverPath, posterPath, media.width, media.height)
+    const coverSetting = process.env.EMBED_COVER || 'auto'
+    if (job.coverUrl) {
+      // auto：小视频才把封面画到第一帧（重编码几乎无损）；大视频（如 4K 原片）
+      // 跳过重编码，保留原画质，只做"封面不单独入库"
+      let coverMode = coverSetting
+      if (coverMode === 'auto') {
+        const bytes = job.downloads.video ? job.downloads.video.bytes : 0
+        coverMode = bytes > 0 && bytes <= 20 * 1024 * 1024 ? 'first-frame' : 'skip'
+        if (coverMode === 'skip') {
+          console.info(
+            `[job ${job.id}] 视频 ${(bytes / 1024 / 1024).toFixed(1)}MB，跳过封面重编码以保留原画质`
+          )
         }
-        videoForImport = posterPath
-        job.downloads.cover = { bytes: cover.size, contentType: cover.contentType }
-        console.info(`[job ${job.id}] 封面已写入视频（${coverMode}）→ ${path.basename(posterPath)}`)
-      } catch (error) {
-        console.warn(`[job ${job.id}] 封面写入失败，改用原视频：${error.message}`)
+      }
+      if (coverMode !== 'skip') {
+        try {
+          const rawCover = path.join(jobDir, 'source_cover')
+          const cover = await download(job.coverUrl, rawCover)
+          const coverPath = await withExtension(rawCover, cover.contentType, 'jpg')
+          const media = await probeVideo(videoPath)
+          const extension = path.extname(videoPath) || '.mp4'
+          const posterPath = path.join(jobDir, `${job.id}.poster${extension}`)
+          if (coverMode === 'attached-pic') {
+            await embedCoverAttachedPic(videoPath, coverPath, posterPath)
+          } else {
+            await embedCoverFirstFrame(videoPath, coverPath, posterPath, media.width, media.height)
+          }
+          videoForImport = posterPath
+          job.downloads.cover = { bytes: cover.size, contentType: cover.contentType }
+          console.info(
+            `[job ${job.id}] 封面已写入视频（${coverMode}）→ ${path.basename(posterPath)}`
+          )
+        } catch (error) {
+          console.warn(`[job ${job.id}] 封面写入失败，改用原视频：${error.message}`)
+        }
       }
     }
     job.step = 'import'

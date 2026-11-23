@@ -217,7 +217,7 @@ curl -s http://<主服务>:7776/status | python3 -m json.tool
 | `PAIR_IDENTIFIER` | 1 | 生成 UUID 并写入视频 `content.identifier` + 静止帧 Apple MakerNote tag 17（PhotoKit 配对要求两端一致）；置 0 退回旧行为 |
 | `VIDEO_CODEC` | libx264 | 视频编码器；真机 Live Photo 为 HEVC(hvc1)，可试 `libx265` / `hevc_videotoolbox` 做 A/B |
 | `COMPOSE_MOVIE` | 1 | 置 0 时跳过 `AVAssetWriter` 重写视频（默认会补出 `still-image-time` 定时元数据轨） |
-| `EMBED_COVER` | first-frame | 视频封面处理方式：`first-frame`（把封面画到第一帧，相册缩略图即封面）/ `attached-pic`（写附图轨，mp4/mov 常被丢弃）/ `skip`（不改视频） |
+| `EMBED_COVER` | auto | 视频封面处理：`auto`（≤20MB 的小视频画到第一帧，大视频跳过重编码保原画质）/ `first-frame` / `attached-pic`（mp4/mov 常被丢弃）/ `skip` |
 | `TAG_CONTENT_ID` | 0 | 仅在 `PAIR_IDENTIFIER=0` 时生效：单独给视频写标识（导出散文件用） |
 | `SIPS_FALLBACK` | 1 | ffmpeg 转码失败时用 macOS `sips` 兜底（HEIC 场景） |
 | `CONCURRENCY` | 1 | 同时合成任务数 |
@@ -437,9 +437,13 @@ docker exec xhs_pic_download node -e "fetch(process.env.LIVEPHOTO_WORKER_URL + '
   （`/getXhsPicUrl` 与 `/getXhsPicRemote` 都支持）。
 - **封面**：视频笔记的 `imageList[0]` 就是封面，解析时标记为 `isVideoCover`：
   - `/getXhsPicRemote` **不再把封面单独存成一张照片**（原来会出现"视频 + 封面"两个资产）；
-  - worker 的 `/import-video` 接收 `coverUrl`，按 `EMBED_COVER`（默认 `first-frame`）
-    把封面画到**视频第一帧** —— Photos 的缩略图取自第一帧，所以相册里看起来就是"封面是视频封面"；
-    需要完全不动视频时设 `EMBED_COVER=skip`。
+  - worker 的 `/import-video` 接收 `coverUrl`，按 `EMBED_COVER` 处理：
+    - `auto`（默认）：≤20MB 的小视频把封面画到**视频第一帧**（Photos 缩略图取自第一帧，
+      相册里看起来就是"封面是视频封面"）；更大的视频（如 4K 原片）**跳过重编码**，
+      只保证"封面不单独入库"，避免为了封面把 50Mbps 原片压掉；
+    - `first-frame`：强制画到第一帧（重编码 CRF 18，音频 copy，时长不变）；
+    - `attached-pic`：写附图轨（mp4/mov 常被丢弃）；
+    - `skip`：完全不动视频。
 - **不会产出"幻灯片视频"**：XHS 会为实况笔记自动合成一条视频
   （`originVideoKey` 形如 `slides_simulate_post/…`，带 BGM）。规则是
   **只要笔记里存在 Live Photo，就不产出 `note.video`**；`originVideoKey` 命中
