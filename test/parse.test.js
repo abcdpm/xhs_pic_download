@@ -335,6 +335,56 @@ test('buildItems：没有 Live Photo 时，笔记封面照常作为照片', () =
   assert.equal(items[0].isRedundantCover, false)
 })
 
+test('buildItems：真实结构（5 项 = 1 封面 + 4 实况）里封面被识别为冗余', () => {
+  // 来自 https://xhslink.cn/o/2K5wVsDZgoX 的实际字段
+  const host = 'http://sns-webpic-qc.xhscdn.com/202611232104'
+  const hash = (seed) => `${seed}`.padEnd(32, '0')
+  const coverId = '1040g008327kmldss76004a6c4799v58132tiaf0'
+  const liveIds = [
+    'notes_pre_post/1040g3k8327kmldsu76bg4a6c4799v581hq2vr6g',
+    'notes_pre_post/1040g3k8327kmldsu76c04a6c4799v581r8l6bqo',
+    'notes_pre_post/1040g3k8327kmldsu76cg4a6c4799v581v4q8ak8',
+    'notes_pre_post/1040g3k8327kmldsu76d04a6c4799v581h6rbbr0',
+  ]
+  const make = (fileId, seed) => {
+    const url = `${host}/${hash(seed)}/${fileId}!h5_1080jpg`
+    return { fileId, url, infoList: [{ url }], urlDefault: url }
+  }
+  const note = {
+    type: 'video',
+    cover: { fileId: coverId },
+    imageList: [
+      make(coverId, 'c'),
+      ...liveIds.map((fileId, index) => ({
+        ...make(fileId, `l${index}`),
+        stream: { h264: [{ masterUrl: `http://sns-video-v2.xhscdn.com/stream/1/10/19/${index}_19.mp4` }] },
+      })),
+    ],
+    video: {
+      consumer: { originVideoKey: 'slides_simulate_post/1040g3k8327kmldsu76' },
+      media: {
+        video: { streamTypes: [259] },
+        stream: { h264: [{ streamType: 259, masterUrl: 'http://sns-video-v2.xhscdn.com/slides.mp4' }] },
+      },
+    },
+  }
+
+  const { items, picUrlArray } = buildItems(note.imageList, note)
+
+  assert.equal(items.length, 5)
+  assert.equal(items[0].isNoteCover, true)
+  assert.equal(items[0].isRedundantCover, true)
+  assert.deepEqual(
+    items.slice(1).map((item) => item.isLivePhoto),
+    [true, true, true, true]
+  )
+  assert.equal(items.every((item, index) => index === 0 || item.isRedundantCover === false), true)
+  // 幻灯片视频不产出；封面既不进 items 流程也不进 picUrlArray
+  assert.equal(items.some((item) => item.type === 'video'), false)
+  assert.equal(picUrlArray.some((url) => url.includes(coverId)), false)
+  assert.equal(picUrlArray.length, 8)
+})
+
 test('buildItems 容忍空 imageList / 无 note.video', () => {
   assert.deepEqual(buildItems([], {}), { picUrlArray: [], items: [] })
   assert.deepEqual(buildItems(undefined, undefined), { picUrlArray: [], items: [] })
