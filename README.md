@@ -83,7 +83,8 @@ node worker.js                # 首次运行请允许「访问您的照片」
 }
 ```
 
-> 实况视频为静音版（XHS `WEB_LIVEPHOTO_19`，audio 参数全 0），本项目不做音频处理。
+> 不额外下载背景音乐；**源视频自带的音轨会保留**。XHS 网页端的实况流本身是静音版
+> （`WEB_LIVEPHOTO_19`，audio 参数全 0），这类合成结果天然无声，属平台限制。
 
 > 上游已改为返回原图（不带 `imageView2` 参数），格式可能是 jpeg/webp/heic；worker 会统一转成 JPEG 后再参与 Live Photo 配对。
 

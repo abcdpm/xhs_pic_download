@@ -422,10 +422,12 @@ docker exec xhs_pic_download node -e "fetch(process.env.LIVEPHOTO_WORKER_URL + '
 
 ## 10. 关于音频
 
-本项目**不处理音频**：小红书网页端下发的实况视频是静音版（`WEB_LIVEPHOTO_19`，
-`audioCodec=""`、`audioBitrate=0`、`volume=0`），因此合成的 Live Photo 天然无声；
-为保持行为简单，worker 与 `lpimport` 都不做音频处理（视频转码时用 `-an` 丢弃音轨，
-AVAssetWriter 只写视频轨 + still-image-time 轨）。
+- **不额外下载任何背景音乐**（原先的 `bgmUrl` 混音功能已移除）；
+- **源视频自带的音轨会保留**：worker 用 ffmpeg `-map 0:a:0?` 保留音频并转成 AAC，
+  `lpimport` 再用 AVAssetReader 解码成 LPCM → AAC 写进重写后的 MOV；
+- 小红书网页端下发的实况视频是静音版（`WEB_LIVEPHOTO_19`，`audioCodec=""`、
+  `audioBitrate=0`、`volume=0`），这种情况合成结果天然无声，属平台限制；
+- 视频笔记（`type=video`）经 `/getXhsPicRemote` 是**原样导入**，音轨完全不受影响。
 
 ## 11. 后续可选增强
 

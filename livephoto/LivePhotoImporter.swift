@@ -395,7 +395,34 @@ func rewriteMovie(input: URL, output: URL, identifier: String) throws {
     }
     writer.add(videoInput)
 
-    // ---- 只处理视频轨（本项目不处理音频）----
+    // ---- 音频（可选）：源视频自带音轨就保留，解码 LPCM → AAC ----
+    // 不使用 passthrough：本机 AVAssetReader 的 passthrough 读不到样本。
+    // 注意：这里只处理「视频里原有的音轨」，不会额外下载任何背景音乐。
+    var audioPair: (AVAssetReaderTrackOutput, AVAssetWriterInput)?
+    if let audioTrack = asset.tracks(withMediaType: .audio).first {
+        let audioOutput = AVAssetReaderTrackOutput(track: audioTrack, outputSettings: [
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVLinearPCMBitDepthKey: 16,
+            AVLinearPCMIsFloatKey: false,
+            AVLinearPCMIsBigEndianKey: false,
+            AVLinearPCMIsNonInterleaved: false,
+        ])
+        let audioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: [
+            AVFormatIDKey: kAudioFormatMPEG4AAC,
+            AVSampleRateKey: 44100.0,
+            AVNumberOfChannelsKey: 1,
+            AVEncoderBitRateKey: 128_000,
+        ])
+        audioInput.expectsMediaDataInRealTime = false
+        if reader.canAdd(audioOutput) && writer.canAdd(audioInput) {
+            reader.add(audioOutput)
+            writer.add(audioInput)
+            audioPair = (audioOutput, audioInput)
+            logStderr("[lpimport] 音频：解码 LPCM → AAC（保留源视频自带音轨）")
+        } else {
+            logStderr("[lpimport] warn: 音频轨无法加入读写器，本次不保留音频")
+        }
+    }
 
     // 1) content.identifier
     let identifierItem = AVMutableMetadataItem()
@@ -448,6 +475,9 @@ func rewriteMovie(input: URL, output: URL, identifier: String) throws {
 
     // 逐轨搬运样本（非实时，简单轮询）
     var pending: [(AVAssetReaderTrackOutput, AVAssetWriterInput)] = [(videoOutput, videoInput)]
+    if let audioPair = audioPair {
+        pending.append(audioPair)
+    }
     var waitRounds = 0
     while !pending.isEmpty {
         var progressed = false
