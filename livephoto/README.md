@@ -144,6 +144,7 @@ docker exec xhs_pic_download node -e "fetch('http://192.168.0.88:7777/health').t
 | `PAIR_IDENTIFIER` | 1 | 置 1 时生成 UUID，写进视频的 `content.identifier`，并由 lpimport 用 ImageIO 写进静止帧的 Apple MakerNote tag 17（两端一致 Photos 才认这对资源）。置 0 退回旧行为 |
 | `VIDEO_CODEC` | libx264 | 视频编码器。真机 Live Photo 是 HEVC(hvc1)，若配对仍失败可试 `VIDEO_CODEC=libx265` 或 `VIDEO_CODEC=hevc_videotoolbox`（会带 `-tag:v hvc1`） |
 | `TAG_CONTENT_ID` | 0 | 仅在 `PAIR_IDENTIFIER=0` 时生效：单独给视频写标识（导出散文件用） |
+| `EMBED_COVER` | first-frame | 视频封面处理：`first-frame` 把封面画到第一帧（相册缩略图即封面）/ `attached-pic`（写附图轨，mp4/mov 常被丢弃）/ `skip`（不改视频） |
 | `SIPS_FALLBACK` | 1 | ffmpeg 转换失败时用 macOS `sips` 兜底（HEIC 常见） |
 | `CONCURRENCY` | 1 | 同时合成数 |
 | `KEEP_FAILED` | 0 | 置 1 保留失败任务产物 |

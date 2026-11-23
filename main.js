@@ -146,6 +146,8 @@ const PIC_ID_REGEX = /https?:\/\/sns-webpic-qc\.xhscdn\.com\/\d+\/[0-9a-z]+\/(\S
 // 兜底：取最后一个路径片段（去掉 ! / ? 后缀）
 const FALLBACK_PIC_ID_REGEX = /\/([0-9a-z]{10,})(?:[!?]|$)/i
 const CDN_IMAGE_HOST = 'https://ci.xiaohongshu.com'
+// 原始上传视频的 CDN（originVideoKey 指向它，通常无水印、画质最高）
+const ORIGIN_VIDEO_HOST = 'https://sns-video-bd.xhscdn.com'
 
 /**
  * 从小红书图片地址中抠出 picId。优先 infoList[0].url（桌面/移动页面都是主图地址），
@@ -174,32 +176,47 @@ function extractPicId(imageItem) {
   return null
 }
 
-function extractVideoUrl(note) {
-  let videoUrl = null
-  try {
-    const media = note.video?.media
-    if (media) {
-      const streamType = media.video?.streamTypes?.[0]
-      Object.entries(media.stream || {}).forEach(([key, value]) => {
-        if (value.length > 0 && value[0].streamType === streamType) {
-          videoUrl = value[0].masterUrl
-        }
-      })
-      // 没有匹配的 streamType 时，取第一个可用的视频流
-      if (!videoUrl) {
-        for (const codec of ['h265', 'h264', 'av1']) {
-          const url = media.stream?.[codec]?.[0]?.masterUrl
-          if (url) {
-            videoUrl = url
-            break
-          }
-        }
-      }
-    }
-  } catch (error) {
-    console.log(error)
+/**
+ * 挑选视频源：
+ * 1) 优先 `note.video.consumer.originVideoKey`（原始上传，通常无水印、画质最高）；
+ * 2) 否则在 media.stream 的所有变体里挑码率最高的（videoBitrate/avgBitrate 优先，
+ *    再比 size 与分辨率），避免默认 streamType 落在低码率/带水印的版本上。
+ */
+function pickVideo(note) {
+  const originKey = note?.video?.consumer?.originVideoKey
+  if (typeof originKey === 'string' && originKey.trim()) {
+    return { url: `${ORIGIN_VIDEO_HOST}/${originKey.trim()}`, source: 'origin' }
   }
-  return videoUrl
+
+  const media = note?.video?.media
+  if (!media) {
+    return null
+  }
+  const candidates = []
+  Object.entries(media.stream || {}).forEach(([codec, list]) => {
+    if (!Array.isArray(list)) {
+      return
+    }
+    list.forEach((entry) => {
+      if (!entry || !entry.masterUrl) {
+        return
+      }
+      const bitrate =
+        Number(entry.videoBitrate || entry.avgBitrate || 0) || Number(entry.size || 0) * 8
+      candidates.push({
+        url: entry.masterUrl,
+        codec,
+        bitrate,
+        height: Number(entry.height || 0),
+      })
+    })
+  })
+  if (candidates.length === 0) {
+    return null
+  }
+  candidates.sort((a, b) => b.bitrate - a.bitrate || b.height - a.height)
+  const best = candidates[0]
+  return { url: best.url, source: 'stream', codec: best.codec, bitrate: best.bitrate }
 }
 
 /**
@@ -236,8 +253,9 @@ function buildItems(imageList, note) {
   const items = []
   const picUrlArray = []
   const list = Array.isArray(imageList) ? imageList : []
+  const isVideoNote = String(note?.type || '').toLowerCase() === 'video'
 
-  list.forEach((imageItem) => {
+  list.forEach((imageItem, position) => {
     const picId = extractPicId(imageItem)
     const liveStream = pickLivePhotoStream(imageItem)
     const livePhotoVideoUrl = liveStream ? liveStream.masterUrl : null
@@ -255,6 +273,8 @@ function buildItems(imageList, note) {
       originalUrl: imageUrl,
       livePhotoVideoUrl,
       isLivePhoto: Boolean(livePhotoVideoUrl),
+      // 视频笔记的 imageList[0] 就是视频封面：不再单独存成照片，改为写进视频
+      isVideoCover: isVideoNote && position === 0,
     })
   })
 
@@ -265,13 +285,22 @@ function buildItems(imageList, note) {
     }
   })
 
-  const videoUrl = extractVideoUrl(note)
-  if (videoUrl) {
-    picUrlArray.push(videoUrl)
+  // 视频：优先原始上传（无水印 / 最高画质）；Live Photo 笔记不再额外产出视频
+  const liveCount = items.filter((item) => item.isLivePhoto).length
+  const shouldIncludeVideo = isVideoNote || liveCount === 0
+  const video = shouldIncludeVideo ? pickVideo(note) : null
+  if (video) {
+    picUrlArray.push(video.url)
+    const coverItem = isVideoNote ? items.find((item) => item.isVideoCover) : null
     items.push({
       index: items.length,
       type: 'video',
-      videoUrl,
+      videoUrl: video.url,
+      videoSource: video.source || 'stream',
+      videoCodec: video.codec || null,
+      videoBitrate: video.bitrate || null,
+      // 视频封面（视频笔记的 imageList[0]），由 worker 写进视频而不是单独存成照片
+      coverUrl: coverItem ? coverItem.imageUrl : null,
       isLivePhoto: false,
     })
   }

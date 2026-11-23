@@ -122,6 +122,90 @@ test('buildItems 优先 h264，缺 h264 时退回其它编码', () => {
   assert.equal(items[1].livePhotoVideoUrl, 'https://sns-video-hw.xhscdn.com/only-h265.mp4')
 })
 
+test('buildItems 视频优先使用 originVideoKey（原始上传，无水印/最高画质）', () => {
+  const note = {
+    type: 'video',
+    imageList: [makeImageItem('1040g2t0cover')],
+    video: {
+      consumer: { originVideoKey: 'pre_post/110/abc123' },
+      media: {
+        video: { streamTypes: [1] },
+        stream: { h264: [{ streamType: 1, masterUrl: 'https://sns-video-hw.xhscdn.com/low.mp4' }] },
+      },
+    },
+  }
+
+  const { items } = buildItems(note.imageList, note)
+  const videoItem = items.find((item) => item.type === 'video')
+
+  assert.equal(videoItem.videoUrl, 'https://sns-video-bd.xhscdn.com/pre_post/110/abc123')
+  assert.equal(videoItem.videoSource, 'origin')
+})
+
+test('buildItems 没有 originVideoKey 时选码率最高的流', () => {
+  const note = {
+    type: 'video',
+    imageList: [makeImageItem('1040g2t0cover')],
+    video: {
+      media: {
+        video: { streamTypes: [1] },
+        stream: {
+          h264: [
+            { streamType: 1, masterUrl: 'https://sns-video-hw.xhscdn.com/low.mp4', videoBitrate: 400000 },
+            { streamType: 2, masterUrl: 'https://sns-video-hw.xhscdn.com/high.mp4', videoBitrate: 4000000 },
+          ],
+        },
+      },
+    },
+  }
+
+  const { items } = buildItems(note.imageList, note)
+  const videoItem = items.find((item) => item.type === 'video')
+
+  assert.equal(videoItem.videoUrl, 'https://sns-video-hw.xhscdn.com/high.mp4')
+  assert.equal(videoItem.videoSource, 'stream')
+})
+
+test('buildItems 视频笔记的封面被标记 isVideoCover，并挂到视频 item 上', () => {
+  const note = {
+    type: 'video',
+    imageList: [makeImageItem('1040g2t0cover')],
+    video: {
+      media: {
+        video: { streamTypes: [1] },
+        stream: { h264: [{ streamType: 1, masterUrl: 'https://sns-video-hw.xhscdn.com/v.mp4' }] },
+      },
+    },
+  }
+
+  const { items } = buildItems(note.imageList, note)
+
+  assert.equal(items[0].isVideoCover, true)
+  assert.equal(items[1].type, 'video')
+  assert.equal(items[1].coverUrl, 'https://ci.xiaohongshu.com/1040g2t0cover')
+})
+
+test('buildItems 的 Live Photo 笔记不再额外产出 note.video', () => {
+  const note = {
+    type: 'normal',
+    imageList: [makeImageItem('1040g2t0live', 'https://sns-video-hw.xhscdn.com/live.mov')],
+    video: {
+      media: {
+        video: { streamTypes: [1] },
+        stream: { h264: [{ streamType: 1, masterUrl: 'https://sns-video-hw.xhscdn.com/bgm.mp4' }] },
+      },
+    },
+  }
+
+  const { items, picUrlArray } = buildItems(note.imageList, note)
+
+  assert.equal(items.filter((item) => item.type === 'video').length, 0)
+  assert.deepEqual(picUrlArray, [
+    'https://ci.xiaohongshu.com/1040g2t0live',
+    'https://sns-video-hw.xhscdn.com/live.mov',
+  ])
+})
+
 test('buildItems 容忍空 imageList / 无 note.video', () => {
   assert.deepEqual(buildItems([], {}), { picUrlArray: [], items: [] })
   assert.deepEqual(buildItems(undefined, undefined), { picUrlArray: [], items: [] })

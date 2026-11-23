@@ -225,6 +225,75 @@ async function probeImage(input) {
   return probeVideo(input)
 }
 
+/**
+ * 把封面图写进视频：作为 attached_pic 轨道（视频流不重新编码）。
+ * 注意：mp4/mov 容器对 attached_pic 支持有限，ffmpeg 常会静默丢弃，
+ * 默认使用下面的 embedCoverFirstFrame。
+ */
+async function embedCoverAttachedPic(videoInput, coverInput, output) {
+  await run(FFMPEG, [
+    '-y',
+    '-hide_banner',
+    '-loglevel',
+    'error',
+    '-i',
+    videoInput,
+    '-i',
+    coverInput,
+    '-map',
+    '0',
+    '-map',
+    '1',
+    '-c',
+    'copy',
+    '-disposition:v:1',
+    'attached_pic',
+    output,
+  ])
+}
+
+/**
+ * 把封面画到视频第一帧：Photos 的缩略图取自视频第一帧，这样封面就成了"视频封面"。
+ * 需要重编码视频轨（CRF 18，肉眼接近无损），音频直接 copy。
+ */
+async function embedCoverFirstFrame(videoInput, coverInput, output, width, height) {
+  const w = Number(width) > 0 ? width : 1080
+  const h = Number(height) > 0 ? height : 1920
+  const filter =
+    `[1:v]scale=${w}:${h}:force_original_aspect_ratio=increase,` +
+    `crop=${w}:${h},setsar=1[cover];` +
+    `[0:v][cover]overlay=0:0:enable='lte(t,0.0334)'[v]`
+  await run(FFMPEG, [
+    '-y',
+    '-hide_banner',
+    '-loglevel',
+    'error',
+    '-i',
+    videoInput,
+    '-i',
+    coverInput,
+    '-filter_complex',
+    filter,
+    '-map',
+    '[v]',
+    '-map',
+    '0:a:0?',
+    '-c:v',
+    'libx264',
+    '-preset',
+    'veryfast',
+    '-crf',
+    '18',
+    '-pix_fmt',
+    'yuv420p',
+    '-c:a',
+    'copy',
+    '-movflags',
+    '+faststart',
+    output,
+  ])
+}
+
 /** 用 ffmpeg -i 的 stderr 解析视频/图片的尺寸、时长、编码 */
 async function probeVideo(input) {
   let text = ''
@@ -377,12 +446,35 @@ async function runJob(job) {
 
   // ---- 单个视频 ----
   if (job.kind === 'video') {
+    let videoForImport = videoPath
+    const coverMode = process.env.EMBED_COVER || 'first-frame'
+    if (job.coverUrl && coverMode !== 'skip') {
+      try {
+        const rawCover = path.join(jobDir, 'source_cover')
+        const cover = await download(job.coverUrl, rawCover)
+        const coverPath = await withExtension(rawCover, cover.contentType, 'jpg')
+        const media = await probeVideo(videoPath)
+        const extension = path.extname(videoPath) || '.mp4'
+        const posterPath = path.join(jobDir, `${job.id}.poster${extension}`)
+        if (coverMode === 'attached-pic') {
+          await embedCoverAttachedPic(videoPath, coverPath, posterPath)
+        } else {
+          await embedCoverFirstFrame(videoPath, coverPath, posterPath, media.width, media.height)
+        }
+        videoForImport = posterPath
+        job.downloads.cover = { bytes: cover.size, contentType: cover.contentType }
+        console.info(`[job ${job.id}] 封面已写入视频（${coverMode}）→ ${path.basename(posterPath)}`)
+      } catch (error) {
+        console.warn(`[job ${job.id}] 封面写入失败，改用原视频：${error.message}`)
+      }
+    }
     job.step = 'import'
-    const result = await runImporter({ videoPath, album: job.album, takenAt: job.takenAt })
+    const result = await runImporter({ videoPath: videoForImport, album: job.album, takenAt: job.takenAt })
     return finishJob(job, jobDir, {
       localIdentifier: result.localIdentifier,
       album: result.album,
       videoBytes: job.downloads.video ? job.downloads.video.bytes : null,
+      coverEmbedded: videoForImport !== videoPath,
     })
   }
 
@@ -507,6 +599,7 @@ function enqueue(payload) {
     kind: payload.kind || 'livephoto',
     imageUrl: payload.imageUrl || null,
     videoUrl: payload.videoUrl || null,
+    coverUrl: payload.coverUrl || null,
   }
   jobs.set(job.id, job)
   queue.push(job.id)
@@ -523,6 +616,7 @@ function publicJob(job) {
     album: job.album,
     imageUrl: job.imageUrl,
     videoUrl: job.videoUrl,
+    coverUrl: job.coverUrl || null,
     downloads: job.downloads || null,
     media: job.media || null,
     result: job.result || null,
@@ -636,14 +730,19 @@ app.post('/import-photo', async (req, res) => {
   }
 })
 
-// 单个视频：由 Mac 下载后直接写入照片图库
+// 单个视频：由 Mac 下载后直接写入照片图库（可带封面）
 app.post('/import-video', async (req, res) => {
   try {
     const body = req.body || {}
     const videoUrl = ensureHttpUrl(body.videoUrl, 'videoUrl')
+    let coverUrl = null
+    if (body.coverUrl) {
+      coverUrl = ensureHttpUrl(body.coverUrl, 'coverUrl')
+    }
     const job = enqueue({
       kind: 'video',
       videoUrl,
+      coverUrl,
       album: body.album,
       takenAt: body.takenAt,
     })

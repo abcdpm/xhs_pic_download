@@ -152,6 +152,11 @@ async function dispatchMediaToWorker(items, album) {
       }
       continue;
     }
+    if (item.type === 'image' && item.isVideoCover) {
+      // 视频笔记的封面：不单独存成照片，由 /import-video 写进视频里
+      results.push({ type: 'cover', ok: true, skipped: true, imageUrl: item.imageUrl });
+      continue;
+    }
     if (item.type === 'image' && item.imageUrl) {
       try {
         const data = await postWorker('/import-photo', { imageUrl: item.imageUrl, album });
@@ -163,7 +168,11 @@ async function dispatchMediaToWorker(items, album) {
     }
     if (item.type === 'video' && item.videoUrl) {
       try {
-        const data = await postWorker('/import-video', { videoUrl: item.videoUrl, album });
+        const data = await postWorker('/import-video', {
+          videoUrl: item.videoUrl,
+          coverUrl: item.coverUrl || undefined,
+          album,
+        });
         results.push({ type: 'video', ok: true, jobId: data.jobId, videoUrl: item.videoUrl });
       } catch (error) {
         results.push({ type: 'video', ok: false, error: error.message, videoUrl: item.videoUrl });

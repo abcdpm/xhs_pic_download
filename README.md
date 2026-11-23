@@ -107,6 +107,10 @@ curl "http://<主服务>:7776/getXhsPicRemote?shareText=<分享文本>"
 
 返回 `{ ok, itemCount, items, remoteJobs, remoteForward }`；每条任务的进度可在 Mac 上查 `GET <worker>/jobs`。
 
+> 视频优先取**原始上传**（`originVideoKey`，通常无水印、最高画质），没有时取码率最高的流；
+> 视频笔记的封面（`imageList[0]`）**不再单独入库**，会由 worker 写入视频第一帧
+> （`EMBED_COVER=first-frame`，默认；设 `skip` 可完全不动视频）。
+
 ## 测试
 
 ```sh
