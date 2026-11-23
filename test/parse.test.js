@@ -206,6 +206,51 @@ test('buildItems 的 Live Photo 笔记不再额外产出 note.video', () => {
   ])
 })
 
+test('buildItems：type=video 但含 Live Photo 的笔记不产出幻灯片视频，也不标记封面', () => {
+  const note = {
+    type: 'video',
+    imageList: [
+      makeImageItem('1040g2t0live1', 'https://sns-video-hw.xhscdn.com/live1.mov'),
+      makeImageItem('1040g2t0live2', 'https://sns-video-hw.xhscdn.com/live2.mov'),
+    ],
+    video: {
+      consumer: {
+        originVideoKey: 'slides_simulate_post/1040g3l8327j6dkn3ng005ofd4nhk0ki6oh8c280',
+      },
+      media: {
+        video: { streamTypes: [259] },
+        stream: { h264: [{ streamType: 259, masterUrl: 'https://sns-video-hw.xhscdn.com/slides.mp4' }] },
+      },
+    },
+  }
+
+  const { items } = buildItems(note.imageList, note)
+
+  assert.equal(items.length, 2)
+  assert.equal(items.some((item) => item.type === 'video'), false)
+  assert.equal(items.every((item) => item.isLivePhoto && item.isVideoCover === false), true)
+})
+
+test('buildItems：只有 slides 自动合成视频且无 Live Photo 时，封面仍按普通图片处理', () => {
+  const note = {
+    type: 'video',
+    imageList: [makeImageItem('1040g2t0cover')],
+    video: {
+      consumer: { originVideoKey: 'slides_simulate_post/xxx' },
+      media: {
+        video: { streamTypes: [259] },
+        stream: { h264: [{ streamType: 259, masterUrl: 'https://sns-video-hw.xhscdn.com/slides.mp4' }] },
+      },
+    },
+  }
+
+  const { items } = buildItems(note.imageList, note)
+
+  assert.equal(items.length, 1)
+  assert.equal(items[0].isVideoCover, false)
+  assert.equal(items[0].isLivePhoto, false)
+})
+
 test('buildItems 容忍空 imageList / 无 note.video', () => {
   assert.deepEqual(buildItems([], {}), { picUrlArray: [], items: [] })
   assert.deepEqual(buildItems(undefined, undefined), { picUrlArray: [], items: [] })

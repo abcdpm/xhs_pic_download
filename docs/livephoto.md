@@ -435,6 +435,11 @@ docker exec xhs_pic_download node -e "fetch(process.env.LIVEPHOTO_WORKER_URL + '
   - worker 的 `/import-video` 接收 `coverUrl`，按 `EMBED_COVER`（默认 `first-frame`）
     把封面画到**视频第一帧** —— Photos 的缩略图取自第一帧，所以相册里看起来就是"封面是视频封面"；
     需要完全不动视频时设 `EMBED_COVER=skip`。
+- **不会产出"幻灯片视频"**：XHS 会为实况笔记自动合成一条视频
+  （`originVideoKey` 形如 `slides_simulate_post/…`，带 BGM）。规则是
+  **只要笔记里存在 Live Photo，就不产出 `note.video`**；`originVideoKey` 命中
+  `slides_simulate_post/` 的也一律跳过。封面标记只在"确实会产出视频"时生效，
+  避免封面被跳过导致丢图。
 
 > 注意：`first-frame` 会重编码视频轨（CRF 18，肉眼接近无损），音频直接 copy，时长不变。
 

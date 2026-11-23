@@ -74,6 +74,48 @@ async function main() {
     }
   }
 
+  // 视频笔记：把所有画质变体列出来（判断是否有更高清/无水印的一路）
+  const videoStream = note.video?.media?.stream
+  if (videoStream) {
+    console.log('\n== note.video.media.stream（全部变体）==')
+    for (const [codec, list] of Object.entries(videoStream)) {
+      if (!Array.isArray(list)) continue
+      list.forEach((entry, i) => {
+        if (!entry) return
+        console.log(
+          `  ${codec}[${i}]: streamType=${entry.streamType} streamDesc=${entry.streamDesc || '-'}` +
+            ` ${entry.width}x${entry.height} videoBitrate=${entry.videoBitrate}` +
+            ` avgBitrate=${entry.avgBitrate} quality=${entry.qualityType || '-'}` +
+            ` audioBitrate=${entry.audioBitrate} size=${entry.size}`
+        )
+      })
+    }
+  }
+
+  // 有的笔记把视频信息塞在 mediaV2（JSON 字符串）里
+  if (typeof note.video?.mediaV2 === 'string') {
+    try {
+      const mediaV2 = JSON.parse(note.video.mediaV2)
+      console.log('\n== note.video.mediaV2.streamTypes ==', JSON.stringify(mediaV2.video?.stream_types))
+      const streams = mediaV2.stream || {}
+      for (const [codec, list] of Object.entries(streams)) {
+        if (!Array.isArray(list)) continue
+        list.forEach((entry, i) => {
+          if (!entry) return
+          console.log(
+            `  mediaV2.${codec}[${i}]: streamType=${entry.stream_type} desc=${entry.stream_desc}` +
+              ` ${entry.width}x${entry.height} bitrate=${entry.video_bitrate}`
+          )
+        })
+      }
+    } catch (error) {
+      console.log('  (mediaV2 解析失败:', error.message, ')')
+    }
+  }
+  if (note.video?.consumer?.originVideoKey) {
+    console.log('\n== note.video.consumer.originVideoKey ==', note.video.consumer.originVideoKey)
+  }
+
   const images = Array.isArray(note.imageList) ? note.imageList : []
   images.forEach((item, index) => {
     console.log(`\n== imageList[${index}] ==`)

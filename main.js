@@ -255,9 +255,23 @@ function buildItems(imageList, note) {
   const list = Array.isArray(imageList) ? imageList : []
   const isVideoNote = String(note?.type || '').toLowerCase() === 'video'
 
+  const liveStreams = list.map((item) => pickLivePhotoStream(item))
+  const hasLivePhoto = liveStreams.some((stream) => Boolean(stream && stream.masterUrl))
+
+  // 视频：优先原始上传（无水印/最高画质）。
+  // 只要笔记里有 Live Photo，就不产出 note.video —— XHS 会为实况笔记自动合成一条
+  // 「幻灯片视频」（originVideoKey 形如 slides_simulate_post/...，带 BGM），不是用户要的。
+  const slidesVideo = /^slides[_-]?simulate/i.test(
+    String(note?.video?.consumer?.originVideoKey || '')
+  )
+  const shouldIncludeVideo = !hasLivePhoto && !slidesVideo
+  const video = shouldIncludeVideo ? pickVideo(note) : null
+  // 只有「确实要产出视频」时，imageList[0] 才作为封面（否则封面会被跳过导致丢图）
+  const isCoverNote = isVideoNote && Boolean(video)
+
   list.forEach((imageItem, position) => {
     const picId = extractPicId(imageItem)
-    const liveStream = pickLivePhotoStream(imageItem)
+    const liveStream = liveStreams[position]
     const livePhotoVideoUrl = liveStream ? liveStream.masterUrl : null
     if (!picId && !livePhotoVideoUrl) {
       return
@@ -274,7 +288,7 @@ function buildItems(imageList, note) {
       livePhotoVideoUrl,
       isLivePhoto: Boolean(livePhotoVideoUrl),
       // 视频笔记的 imageList[0] 就是视频封面：不再单独存成照片，改为写进视频
-      isVideoCover: isVideoNote && position === 0,
+      isVideoCover: isCoverNote && position === 0,
     })
   })
 
@@ -285,13 +299,10 @@ function buildItems(imageList, note) {
     }
   })
 
-  // 视频：优先原始上传（无水印 / 最高画质）；Live Photo 笔记不再额外产出视频
-  const liveCount = items.filter((item) => item.isLivePhoto).length
-  const shouldIncludeVideo = isVideoNote || liveCount === 0
-  const video = shouldIncludeVideo ? pickVideo(note) : null
+  // 视频：优先原始上传（无水印/最高画质）
   if (video) {
     picUrlArray.push(video.url)
-    const coverItem = isVideoNote ? items.find((item) => item.isVideoCover) : null
+    const coverItem = isCoverNote ? items.find((item) => item.isVideoCover) : null
     items.push({
       index: items.length,
       type: 'video',
