@@ -425,8 +425,13 @@ docker exec xhs_pic_download node -e "fetch(process.env.LIVEPHOTO_WORKER_URL + '
 
 - **画质与去水印**：优先用 `note.video.consumer.originVideoKey` 拼出
   `https://sns-video-bd.xhscdn.com/<key>`（原始上传，通常无水印、画质最高）；
-  没有该字段时，在 `media.stream` 的**所有**变体里按 `videoBitrate`（其次 `avgBitrate`/`size`、
-  再比分辨率）挑最高的一条，不再盲取 `streamTypes[0]`。
+  同时把网页流里码率最高的一条放进 `videoFallbackUrl`，**原片下载失败会自动回退**
+  （worker 会打印 `视频下载失败：… → 404` 然后改用兜底流）。
+  没有 `originVideoKey` 时，只按所有变体里 `videoBitrate`（其次 `avgBitrate`/`size`、
+  再比分辨率）最高的一条来取，不再盲取 `streamTypes[0]`。
+- 实测案例：某视频笔记网页端只有
+  `MINI_APP_259`（720×1280，1.84Mbps，小程序版）与 `MP4_WEB_537_h5`（720×1280，1.33Mbps），
+  而 `mediaV2.video` 显示原片是 **2160×3840**；此时只有 `originVideoKey` 能拿到高清无水印版本。
 - **xsec_token**：分享链接里的 token 已保留（`main.js` 不会丢），不需要额外传参。
   若个别笔记仍只能拿到低清流，可在请求里带登录态 `xhsCookie`
   （`/getXhsPicUrl` 与 `/getXhsPicRemote` 都支持）。

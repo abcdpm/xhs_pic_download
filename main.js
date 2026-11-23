@@ -179,15 +179,23 @@ function extractPicId(imageItem) {
 /**
  * 挑选视频源：
  * 1) 优先 `note.video.consumer.originVideoKey`（原始上传，通常无水印、画质最高）；
- * 2) 否则在 media.stream 的所有变体里挑码率最高的（videoBitrate/avgBitrate 优先，
- *    再比 size 与分辨率），避免默认 streamType 落在低码率/带水印的版本上。
+ * 2) 同时给出网页流里码率最高的一条作为兜底（原片取不到时自动回退）。
  */
 function pickVideo(note) {
+  const bestStream = pickBestStream(note)
   const originKey = note?.video?.consumer?.originVideoKey
   if (typeof originKey === 'string' && originKey.trim()) {
-    return { url: `${ORIGIN_VIDEO_HOST}/${originKey.trim()}`, source: 'origin' }
+    return {
+      url: `${ORIGIN_VIDEO_HOST}/${originKey.trim()}`,
+      source: 'origin',
+      fallbackUrl: bestStream ? bestStream.url : null,
+    }
   }
+  return bestStream
+}
 
+/** 在 media.stream 的所有变体里挑码率最高的一条 */
+function pickBestStream(note) {
   const media = note?.video?.media
   if (!media) {
     return null
@@ -307,6 +315,8 @@ function buildItems(imageList, note) {
       index: items.length,
       type: 'video',
       videoUrl: video.url,
+      // 原片取不到时回退到网页最高码率流
+      videoFallbackUrl: video.fallbackUrl || null,
       videoSource: video.source || 'stream',
       videoCodec: video.codec || null,
       videoBitrate: video.bitrate || null,

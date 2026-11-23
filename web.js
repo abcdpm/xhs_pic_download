@@ -170,6 +170,7 @@ async function dispatchMediaToWorker(items, album) {
       try {
         const data = await postWorker('/import-video', {
           videoUrl: item.videoUrl,
+          fallbackUrl: item.videoFallbackUrl || undefined,
           coverUrl: item.coverUrl || undefined,
           album,
         });

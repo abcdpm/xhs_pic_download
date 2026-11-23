@@ -426,11 +426,41 @@ async function runJob(job) {
     console.info(`[job ${job.id}] downloaded image=${image.size}B(${image.contentType})`)
   }
   if (job.videoUrl) {
-    const raw = path.join(jobDir, 'source_video')
-    const video = await download(job.videoUrl, raw)
-    videoPath = await withExtension(raw, video.contentType, 'mp4')
-    job.downloads.video = { bytes: video.size, contentType: video.contentType }
-    console.info(`[job ${job.id}] downloaded video=${video.size}B(${video.contentType})`)
+    const candidates = [job.videoUrl]
+    if (job.fallbackUrl && job.fallbackUrl !== job.videoUrl) {
+      candidates.push(job.fallbackUrl)
+    }
+    let picked = null
+    let lastError = null
+    for (let i = 0; i < candidates.length; i += 1) {
+      const url = candidates[i]
+      try {
+        const raw = path.join(jobDir, `source_video_${i}`)
+        const info = await download(url, raw)
+        picked = {
+          url,
+          size: info.size,
+          contentType: info.contentType,
+          path: await withExtension(raw, info.contentType, 'mp4'),
+        }
+        break
+      } catch (error) {
+        lastError = error
+        console.warn(`[job ${job.id}] 视频下载失败：${url.slice(0, 100)} → ${error.message}`)
+      }
+    }
+    if (!picked) {
+      throw lastError || new Error('视频下载失败')
+    }
+    videoPath = picked.path
+    job.downloads.video = {
+      bytes: picked.size,
+      contentType: picked.contentType,
+      source: picked.url,
+    }
+    console.info(
+      `[job ${job.id}] downloaded video=${picked.size}B(${picked.contentType}) ← ${picked.url.slice(0, 80)}`
+    )
   }
 
   // ---- 单张图片 ----
@@ -599,6 +629,7 @@ function enqueue(payload) {
     kind: payload.kind || 'livephoto',
     imageUrl: payload.imageUrl || null,
     videoUrl: payload.videoUrl || null,
+    fallbackUrl: payload.fallbackUrl || null,
     coverUrl: payload.coverUrl || null,
   }
   jobs.set(job.id, job)
@@ -616,6 +647,7 @@ function publicJob(job) {
     album: job.album,
     imageUrl: job.imageUrl,
     videoUrl: job.videoUrl,
+    fallbackUrl: job.fallbackUrl || null,
     coverUrl: job.coverUrl || null,
     downloads: job.downloads || null,
     media: job.media || null,
@@ -739,9 +771,14 @@ app.post('/import-video', async (req, res) => {
     if (body.coverUrl) {
       coverUrl = ensureHttpUrl(body.coverUrl, 'coverUrl')
     }
+    let fallbackUrl = null
+    if (body.fallbackUrl) {
+      fallbackUrl = ensureHttpUrl(body.fallbackUrl, 'fallbackUrl')
+    }
     const job = enqueue({
       kind: 'video',
       videoUrl,
+      fallbackUrl,
       coverUrl,
       album: body.album,
       takenAt: body.takenAt,

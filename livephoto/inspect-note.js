@@ -113,7 +113,10 @@ async function main() {
     }
   }
   if (note.video?.consumer?.originVideoKey) {
-    console.log('\n== note.video.consumer.originVideoKey ==', note.video.consumer.originVideoKey)
+    const originKey = String(note.video.consumer.originVideoKey).trim()
+    console.log('\n== note.video.consumer.originVideoKey ==', originKey)
+    console.log('== 原始视频地址（可直接 curl -I 验证）==')
+    console.log(`   https://sns-video-bd.xhscdn.com/${originKey}`)
   }
 
   const images = Array.isArray(note.imageList) ? note.imageList : []

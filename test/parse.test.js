@@ -122,7 +122,7 @@ test('buildItems 优先 h264，缺 h264 时退回其它编码', () => {
   assert.equal(items[1].livePhotoVideoUrl, 'https://sns-video-hw.xhscdn.com/only-h265.mp4')
 })
 
-test('buildItems 视频优先使用 originVideoKey（原始上传，无水印/最高画质）', () => {
+test('buildItems 视频优先使用 originVideoKey，并把最高码率流作为兜底', () => {
   const note = {
     type: 'video',
     imageList: [makeImageItem('1040g2t0cover')],
@@ -130,7 +130,14 @@ test('buildItems 视频优先使用 originVideoKey（原始上传，无水印/�
       consumer: { originVideoKey: 'pre_post/110/abc123' },
       media: {
         video: { streamTypes: [1] },
-        stream: { h264: [{ streamType: 1, masterUrl: 'https://sns-video-hw.xhscdn.com/low.mp4' }] },
+        stream: {
+          h264: [
+            { streamType: 1, masterUrl: 'https://sns-video-hw.xhscdn.com/low.mp4', videoBitrate: 400000 },
+          ],
+          h265: [
+            { streamType: 2, masterUrl: 'https://sns-video-hw.xhscdn.com/mid.mp4', videoBitrate: 2000000 },
+          ],
+        },
       },
     },
   }
@@ -140,6 +147,7 @@ test('buildItems 视频优先使用 originVideoKey（原始上传，无水印/�
 
   assert.equal(videoItem.videoUrl, 'https://sns-video-bd.xhscdn.com/pre_post/110/abc123')
   assert.equal(videoItem.videoSource, 'origin')
+  assert.equal(videoItem.videoFallbackUrl, 'https://sns-video-hw.xhscdn.com/mid.mp4')
 })
 
 test('buildItems 没有 originVideoKey 时选码率最高的流', () => {
